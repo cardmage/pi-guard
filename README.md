@@ -1,5 +1,7 @@
 # pi-guard
 
+English | [한국어](./README.ko.md)
+
 A [Pi](https://pi.dev) extension that checks every URL in the agent's final answer and catches hallucinated citations.
 
 LLMs cannot know from memory alone whether an arbitrary URL resolves—they can only judge whether it looks plausible. `pi-guard` therefore **checks URLs over HTTP first** and asks an LLM **only** when HTTP is inconclusive (403/429 bot blocks, 5xx errors, timeouts, network failures).
