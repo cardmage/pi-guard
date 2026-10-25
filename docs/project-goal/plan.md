@@ -197,7 +197,7 @@ const msg = await stream.result();
 ## 6. 파일 구조
 ```
 pi-guard/
-├── plan.md
+├── docs/project-goal/plan.md
 ├── README.md
 ├── package.json
 ├── tsconfig.json
