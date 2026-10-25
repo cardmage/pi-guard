@@ -1,0 +1,52 @@
+{
+  "name": "pi-guard",
+  "version": "0.1.0",
+  "description": "Pi extension that verifies URLs in the agent's final answer and catches hallucinated links (HTTP check first, LLM fallback).",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cardmage/pi-guard.git"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "citation",
+    "hallucination",
+    "url"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "tsc --noEmit && vitest run"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "dependencies": {
+    "undici": "^8.12.3"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^1.4.0",
+    "@earendil-works/pi-coding-agent": "^1.4.0",
+    "@earendil-works/pi-tui": "^1.4.0",
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.12"
+  }
+}
