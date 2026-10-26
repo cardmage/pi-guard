@@ -30,6 +30,8 @@ export const STATUS_KEY = "pi-guard";
 interface GuardState {
 	config: PiGuardConfig;
 	net: DispatcherBuild | undefined;
+	/** Session cache of HTTP check results, by canonical URL key. */
+	httpCache: Map<string, HttpCheckResult>;
 	/** Session cache of decisive findings, by canonical URL key. */
 	cache: Map<string, UrlFinding>;
 	rewriteCount: number;
@@ -62,27 +64,28 @@ function describeHttp(r: HttpCheckResult | undefined): string {
 	return r.error ?? r.verdict;
 }
 
-/** Feedback sent to the agent when hallucinated URLs are found. */
+/** Feedback sent to the agent when hallucinated or unsupported URLs are found. */
 export function buildRewriteMessage(failed: readonly UrlFinding[]): string {
 	const lines = failed.map((f) => `- ${f.url} — ${f.reason}`);
 	return [
-		"[pi-guard] Your last answer cites URLs that appear not to exist:",
+		"[pi-guard] Your last answer cites URLs that appear not to exist or do not support the cited claim:",
 		...lines,
 		"",
-		"Rewrite your answer. Remove these URLs, or replace them with real URLs that you have verified with a tool (for example a web search or by fetching the page). Do not guess or construct URLs. Keep the rest of the answer the same, and do not mention this check.",
+		"Rewrite your answer. Remove these URLs, fix the inaccurate claims, or replace them with real URLs whose content you have verified with a tool (for example a web search or by fetching the page). Do not guess or construct URLs. Keep the rest of the answer the same, and do not mention this check.",
 	].join("\n");
 }
 
-/** Warning shown to the user when hallucinated URLs remain. */
+/** Warning shown to the user when hallucinated or unsupported URLs remain. */
 export function buildWarning(failed: readonly UrlFinding[]): string {
 	const lines = failed.map((f) => `• ${f.url} (${f.reason})`);
-	return [`pi-guard: ${failed.length} URL(s) in the answer appear not to exist:`, ...lines].join("\n");
+	return [`pi-guard: ${failed.length} URL(s) in the answer failed verification:`, ...lines].join("\n");
 }
 
 export default function piGuard(pi: ExtensionAPI): void {
 	const state: GuardState = {
 		config: defaultConfig(),
 		net: undefined,
+		httpCache: new Map(),
 		cache: new Map(),
 		rewriteCount: 0,
 		networkWarned: false,
@@ -98,6 +101,7 @@ export default function piGuard(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		await closeDispatcher(state.net?.dispatcher);
 		state.net = undefined;
+		state.httpCache.clear();
 		state.cache.clear();
 		state.rewriteCount = 0;
 		state.networkWarned = false;
@@ -141,37 +145,61 @@ export default function piGuard(pi: ExtensionAPI): void {
 		const pending: ExtractedUrl[] = [];
 		for (const c of candidates) {
 			const hit = state.cache.get(c.key);
-			if (hit) findings.set(c.key, { ...hit, url: c.url });
-			else pending.push(c);
+			// When verifyContent is enabled, HTTP 200 URLs with pageContent must be checked against the current answer's context.
+			if (hit && !(cfg.verifyContent && hit.http?.verdict === "OK")) {
+				findings.set(c.key, { ...hit, url: c.url });
+			} else {
+				pending.push(c);
+			}
 		}
 		if (pending.length === 0) return candidates.map((c) => findings.get(c.key)!);
 
-		// 1. HTTP
-		let httpResults: HttpCheckResult[];
-		if (cfg.http.enabled && state.net) {
-			httpResults = await checkUrls(
-				pending.map((p) => p.url),
-				{
-					dispatcher: state.net.dispatcher,
-					timeoutMs: cfg.http.timeoutMs,
-					concurrency: cfg.http.concurrency,
-					userAgent: cfg.http.userAgent,
-					signal,
-					proxyConfigured: state.net.proxyConfigured,
-				},
-			);
-		} else {
-			httpResults = pending.map((p) => ({ url: p.url, verdict: "UNCERTAIN", error: "HTTP check disabled", errorKind: "disabled" }));
+		// 1. HTTP (use httpCache when available)
+		const httpByKey = new Map<string, HttpCheckResult>();
+		const httpPending: ExtractedUrl[] = [];
+		for (const p of pending) {
+			const cachedHttp = state.httpCache.get(p.key);
+			if (cachedHttp) httpByKey.set(p.key, { ...cachedHttp, url: p.url });
+			else httpPending.push(p);
 		}
-		if (signal.aborted) return [];
 
-		if (!state.networkWarned) {
-			const netFailures = httpResults.filter((r) => r.errorKind === "proxy" || r.errorKind === "tls");
+		let freshHttpResults: HttpCheckResult[] = [];
+		if (httpPending.length > 0) {
+			if (cfg.http.enabled && state.net) {
+				freshHttpResults = await checkUrls(
+					httpPending.map((p) => p.url),
+					{
+						dispatcher: state.net.dispatcher,
+						timeoutMs: cfg.http.timeoutMs,
+						concurrency: cfg.http.concurrency,
+						userAgent: cfg.http.userAgent,
+						signal,
+						proxyConfigured: state.net.proxyConfigured,
+						fetchContent: cfg.verifyContent,
+					},
+				);
+			} else {
+				freshHttpResults = httpPending.map((p) => ({ url: p.url, verdict: "UNCERTAIN", error: "HTTP check disabled", errorKind: "disabled" }));
+			}
+			if (signal.aborted) return [];
+			httpPending.forEach((p, i) => {
+				const r = freshHttpResults[i]!;
+				httpByKey.set(p.key, r);
+				if (r.verdict === "OK" || r.verdict === "NOT_FOUND") {
+					state.httpCache.set(p.key, r);
+				}
+			});
+		}
+
+		const httpResults = pending.map((p) => httpByKey.get(p.key)!);
+
+		if (!state.networkWarned && freshHttpResults.length > 0) {
+			const netFailures = freshHttpResults.filter((r) => r.errorKind === "proxy" || r.errorKind === "tls");
 			const allNetwork =
-				httpResults.length >= 3 && httpResults.every((r) => r.errorKind === "network" || r.errorKind === "timeout");
+				freshHttpResults.length >= 3 && freshHttpResults.every((r) => r.errorKind === "network" || r.errorKind === "timeout");
 			if (netFailures.length > 0 || allNetwork) {
 				state.networkWarned = true;
-				const sample = netFailures[0]?.error ?? httpResults[0]?.error ?? "";
+				const sample = netFailures[0]?.error ?? freshHttpResults[0]?.error ?? "";
 				notify(
 					ctx,
 					`pi-guard: HTTP checks are failing (${state.net?.description ?? "no HTTP client"}): ${sample}\nCheck proxy/certificate settings (HTTPS_PROXY / http.proxy / http.useSystemCa). Falling back to LLM judgement.`,
@@ -180,30 +208,35 @@ export default function piGuard(pi: ExtensionAPI): void {
 			}
 		}
 
-		// 2. LLM for UNCERTAIN
-		const uncertain: { p: ExtractedUrl; http: HttpCheckResult }[] = [];
+		// 2. LLM for UNCERTAIN or content verification (when verifyContent is enabled and pageContent was extracted)
+		const needsLlm: { p: ExtractedUrl; http: HttpCheckResult }[] = [];
 		pending.forEach((p, i) => {
 			const http = httpResults[i]!;
 			if (http.verdict === "OK") {
-				const f: UrlFinding = { url: p.url, http, failed: false, reason: describeHttp(http) };
-				findings.set(p.key, f);
-				state.cache.set(p.key, f);
+				if (cfg.verifyContent && http.pageContent) {
+					needsLlm.push({ p, http });
+				} else {
+					const f: UrlFinding = { url: p.url, http, failed: false, reason: describeHttp(http) };
+					findings.set(p.key, f);
+					state.cache.set(p.key, f);
+				}
 			} else if (http.verdict === "NOT_FOUND") {
 				const f: UrlFinding = { url: p.url, http, failed: true, reason: describeHttp(http) };
 				findings.set(p.key, f);
 				state.cache.set(p.key, f);
 			} else {
-				uncertain.push({ p, http });
+				needsLlm.push({ p, http });
 			}
 		});
 
-		if (uncertain.length > 0) {
+		if (needsLlm.length > 0) {
 			const resolved = resolveVerifierModel(cfg.verifier, ctx.modelRegistry, ctx.model);
 			if (resolved.warning) warnOnce(ctx, `pi-guard: ${resolved.warning}`);
-			const items: VerifyItem[] = uncertain.map(({ p, http }) => ({
+			const items: VerifyItem[] = needsLlm.map(({ p, http }) => ({
 				url: p.url,
 				httpStatus: http.status,
 				httpError: http.error,
+				...(http.pageContent ? { pageContent: http.pageContent } : {}),
 				context: snippetAround(answer, p.index, p.length),
 			}));
 			setStatus(ctx, `pi-guard: asking verifier about ${items.length} URL(s)…`);
@@ -215,19 +248,20 @@ export default function piGuard(pi: ExtensionAPI): void {
 			});
 			if (signal.aborted) return [];
 			if (outcome.error && !/aborted/.test(outcome.error)) warnOnce(ctx, `pi-guard: ${outcome.error} (URLs passed unchecked)`);
-			for (const { p, http } of uncertain) {
+			for (const { p, http } of needsLlm) {
 				const llm = outcome.results.get(p.url) ?? { url: p.url, verdict: "UNKNOWN" as const, reason: "no verdict" };
 				const httpPart = describeHttp(http);
+				const failed = llm.verdict === "NOT_EXISTS" || llm.verdict === "CONTRADICTED";
 				const f: UrlFinding = {
 					url: p.url,
 					http,
 					llm,
-					failed: llm.verdict === "NOT_EXISTS",
+					failed,
 					reason: `verifier: ${llm.reason || llm.verdict}${httpPart ? ` (${httpPart})` : ""}`,
 				};
 				findings.set(p.key, f);
-				// UNKNOWN is fail-open and may be transient: ask again next time.
-				if (llm.verdict !== "UNKNOWN") state.cache.set(p.key, f);
+				// Cache existence verdicts (when no pageContent was checked) if decisive.
+				if (llm.verdict !== "UNKNOWN" && !http.pageContent) state.cache.set(p.key, f);
 			}
 		}
 		return candidates.map((c) => findings.get(c.key)).filter((f): f is UrlFinding => !!f);

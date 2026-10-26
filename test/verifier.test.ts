@@ -49,17 +49,27 @@ describe("parseVerdicts", () => {
 		expect([...r.values()].every((v) => v.verdict === "UNKNOWN")).toBe(true);
 		expect(r.has("https://zzz.com")).toBe(false);
 	});
+	it("parses SUPPORTED and CONTRADICTED content verdicts", () => {
+		const r = parseVerdicts(
+			'{"results":[{"url":"https://a.com/x","verdict":"SUPPORTED","reason":"matches"},{"url":"https://b.com/y","verdict":"CONTRADICTED","reason":"wrong topic"}]}',
+			URLS,
+		);
+		expect(r.get("https://a.com/x")?.verdict).toBe("SUPPORTED");
+		expect(r.get("https://b.com/y")?.verdict).toBe("CONTRADICTED");
+	});
 });
 
 describe("buildUserPrompt", () => {
-	it("contains each URL, HTTP signal, context and the output format", () => {
+	it("contains each URL, HTTP signal, pageContent, context and the output format", () => {
 		const p = buildUserPrompt([
 			{ url: "https://a.com/x", httpStatus: 403, context: "see https://a.com/x" },
 			{ url: "https://b.com/y", httpError: "timeout", context: "ctx" },
+			{ url: "https://c.com/z", httpStatus: 200, pageContent: "Page Title — body text", context: "claims https://c.com/z" },
 		]);
 		expect(p).toContain('"httpStatus": 403');
 		expect(p).toContain('"httpError": "timeout"');
-		expect(p).toContain('"verdict":"EXISTS|NOT_EXISTS|UNKNOWN"');
+		expect(p).toContain('"pageContent": "Page Title — body text"');
+		expect(p).toContain('"verdict":"EXISTS|NOT_EXISTS|SUPPORTED|CONTRADICTED|UNKNOWN"');
 	});
 });
 

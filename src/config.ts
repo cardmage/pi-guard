@@ -19,6 +19,7 @@ export function defaultConfig(): PiGuardConfig {
 		maxRewrites: 1,
 		maxUrls: 20,
 		skipCodeBlocks: true,
+		verifyContent: true,
 		bypassDomains: [],
 		verifier: {
 			provider: null,
@@ -160,6 +161,7 @@ export function validateConfig(raw: unknown): { config: PiGuardConfig; warnings:
 		maxRewrites: val.int(raw, "maxRewrites", "maxRewrites", d.maxRewrites, 0, 10),
 		maxUrls: val.int(raw, "maxUrls", "maxUrls", d.maxUrls, 1, 200),
 		skipCodeBlocks: val.bool(raw, "skipCodeBlocks", "skipCodeBlocks", d.skipCodeBlocks),
+		verifyContent: val.bool(raw, "verifyContent", "verifyContent", d.verifyContent),
 		bypassDomains: val.stringArray(raw, "bypassDomains", "bypassDomains", d.bypassDomains),
 		verifier,
 		http,

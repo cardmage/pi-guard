@@ -36,6 +36,8 @@ export interface PiGuardConfig {
 	maxRewrites: number;
 	maxUrls: number;
 	skipCodeBlocks: boolean;
+	/** When true, fetches page text for HTTP 200 URLs and uses the verifier LLM to check whether the cited page supports the claim around the URL. */
+	verifyContent: boolean;
 	bypassDomains: string[];
 	verifier: VerifierConfig;
 	http: HttpConfig;
@@ -55,10 +57,12 @@ export interface HttpCheckResult {
 	/** Human-readable error, when no usable response was received. */
 	error?: string;
 	errorKind?: HttpErrorKind;
+	/** Extracted readable text snippet from the page when `fetchContent` is enabled and the response is textual 2xx. */
+	pageContent?: string;
 }
 
-/** Outcome of the LLM judgement for URLs the HTTP check could not decide. */
-export type LlmVerdict = "EXISTS" | "NOT_EXISTS" | "UNKNOWN";
+/** Outcome of the LLM judgement for URLs (existence or content grounding). */
+export type LlmVerdict = "EXISTS" | "NOT_EXISTS" | "SUPPORTED" | "CONTRADICTED" | "UNKNOWN";
 
 export interface LlmResult {
 	url: string;
@@ -71,7 +75,7 @@ export interface UrlFinding {
 	url: string;
 	http?: HttpCheckResult;
 	llm?: LlmResult;
-	/** True when the URL is considered hallucinated (HTTP NOT_FOUND or LLM NOT_EXISTS). */
+	/** True when the URL is considered hallucinated or its content contradicts the claim (HTTP NOT_FOUND, LLM NOT_EXISTS, or LLM CONTRADICTED). */
 	failed: boolean;
 	/** Short explanation (HTTP status / error / LLM reason). */
 	reason: string;

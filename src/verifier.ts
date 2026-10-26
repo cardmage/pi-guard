@@ -4,21 +4,32 @@ import type { Api, AssistantMessage, Model, UserMessage } from "@earendil-works/
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { LlmResult, LlmVerdict, VerifierConfig } from "./types.ts";
 
-export const DEFAULT_SYSTEM_PROMPT = `You are a citation auditor. You judge whether URLs cited by an AI assistant point to pages that really exist.
+export const DEFAULT_SYSTEM_PROMPT = `You are a citation auditor. You judge whether URLs cited by an AI assistant point to real pages and, when page content is provided, whether the page actually supports the assistant's claim.
 
-Some URLs could not be verified over HTTP (blocked by bot protection, rate limits, server errors, timeouts, or network problems). For each one, use your knowledge of the site's real URL structure, documentation layout, versioning scheme, and naming conventions to decide:
+Case 1 — Existence check (no \`pageContent\` provided):
+Some URLs could not be verified over HTTP (blocked by bot protection, rate limits, server errors, timeouts, or network problems). Use your knowledge of the site's real URL structure, documentation layout, versioning scheme, and naming conventions to decide:
 - "EXISTS": you are confident the page exists (well-known page, plausible path on a site whose structure you know, or the HTTP signal suggests a live page behind access control).
 - "NOT_EXISTS": you are confident the URL is fabricated (non-existent product/version, invented path segments, impossible structure, made-up domain).
 - "UNKNOWN": you cannot tell. Prefer UNKNOWN over guessing.
+A 401/403/429 status usually means the server is up and blocks automated clients; it is not evidence that the page is missing.
 
-A 401/403/429 status usually means the server is up and blocks automated clients; it is not evidence that the page is missing. Judge each URL independently. Never invent new URLs.`;
+Case 2 — Content grounding check (\`pageContent\` is provided):
+The URL returned HTTP 200 and its extracted text is given in \`pageContent\`. Compare \`pageContent\` with the assistant's surrounding \`context\`:
+- "NOT_EXISTS": \`pageContent\` is clearly a soft-404 / "page not found" / missing-resource error page despite HTTP 200.
+- "SUPPORTED": the page is relevant and supports (or is consistent with) the claim or citation in \`context\`. General reference links (e.g. homepage or docs root cited as a general pointer) are also SUPPORTED.
+- "CONTRADICTED": the assistant makes a specific factual claim attributed to this URL, and \`pageContent\` clearly contradicts it or is about a completely unrelated topic that does not contain the claimed information.
+- "UNKNOWN": \`pageContent\` is truncated, empty, a login/JS shell, or insufficient to tell. Prefer UNKNOWN over false alarms.
 
-const VERDICTS: readonly LlmVerdict[] = ["EXISTS", "NOT_EXISTS", "UNKNOWN"];
+Judge each URL independently. Never invent new URLs.`;
+
+const VERDICTS: readonly LlmVerdict[] = ["EXISTS", "NOT_EXISTS", "SUPPORTED", "CONTRADICTED", "UNKNOWN"];
 
 export interface VerifyItem {
 	url: string;
 	httpStatus?: number;
 	httpError?: string;
+	/** Extracted text from the fetched page (when HTTP 2xx and content verification is enabled). */
+	pageContent?: string;
 	/** Answer text around the URL. */
 	context: string;
 }
@@ -74,17 +85,18 @@ export function buildUserPrompt(items: readonly VerifyItem[]): string {
 		url: it.url,
 		...(it.httpStatus !== undefined ? { httpStatus: it.httpStatus } : {}),
 		...(it.httpError ? { httpError: it.httpError } : {}),
+		...(it.pageContent ? { pageContent: it.pageContent } : {}),
 		context: it.context,
 	}));
 	return [
-		"Judge whether each URL below exists. `context` is the assistant's answer text around the URL.",
+		"Judge each URL below. `context` is the assistant's answer text around the URL. When `pageContent` is present, verify that the page is not a soft-404 and that it supports the assistant's claim in `context`.",
 		"",
 		"<urls>",
 		JSON.stringify(payload, null, 2),
 		"</urls>",
 		"",
 		"Respond with JSON only, no prose, exactly in this shape (one entry per URL, same URL strings):",
-		'{"results":[{"url":"<url>","verdict":"EXISTS|NOT_EXISTS|UNKNOWN","reason":"<short reason>"}]}',
+		'{"results":[{"url":"<url>","verdict":"EXISTS|NOT_EXISTS|SUPPORTED|CONTRADICTED|UNKNOWN","reason":"<short reason>"}]}',
 	].join("\n");
 }
 

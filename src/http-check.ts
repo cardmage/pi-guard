@@ -7,6 +7,9 @@ import type { HttpCheckResult, HttpErrorKind, HttpVerdict } from "./types.ts";
 export const DEFAULT_USER_AGENT =
 	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
 
+const MAX_CONTENT_BYTES = 64 * 1024;
+const MAX_CONTENT_CHARS = 4000;
+
 export interface HttpCheckOptions {
 	dispatcher?: Dispatcher;
 	timeoutMs: number;
@@ -15,6 +18,40 @@ export interface HttpCheckOptions {
 	signal?: AbortSignal;
 	/** A proxy may be in use: DNS failures for other hosts are proxy problems, not missing pages. */
 	proxyConfigured?: boolean;
+	/** When true, fetches up to 64 KB of textual body on 2xx responses and extracts readable text. */
+	fetchContent?: boolean;
+}
+
+/** Strips HTML tags, scripts, styles, and collapses whitespace into a compact readable snippet. */
+export function extractTextFromBody(raw: string, contentType: string): string {
+	const decodeEntities = (s: string) =>
+		s
+			.replace(/&nbsp;/gi, " ")
+			.replace(/&amp;/gi, "&")
+			.replace(/&lt;/gi, "<")
+			.replace(/&gt;/gi, ">")
+			.replace(/&quot;/gi, '"')
+			.replace(/&#39;/gi, "'");
+
+	let text = raw;
+	if (/html|xml/i.test(contentType)) {
+		const titleMatch = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+		const title = titleMatch ? decodeEntities(titleMatch[1]!.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim() : "";
+		text = decodeEntities(
+			text
+				.replace(/<(script|style|noscript|svg|head)[^>]*>[\s\S]*?<\/\1>/gi, " ")
+				.replace(/<!--[\s\S]*?-->/g, " ")
+				.replace(/<[^>]+>/g, " "),
+		)
+			.replace(/\s+/g, " ")
+			.trim();
+		if (title && !text.startsWith(title)) {
+			text = text ? `${title} — ${text}` : title;
+		}
+	} else {
+		text = text.replace(/\s+/g, " ").trim();
+	}
+	return text.slice(0, MAX_CONTENT_CHARS);
 }
 
 /** Maps a final HTTP status to a verdict. */
@@ -119,12 +156,39 @@ export function classifyError(
 	return { verdict: "UNCERTAIN", kind: "network", error: message };
 }
 
+async function readBoundedText(body: ReadableStream<Uint8Array>, maxBytes: number): Promise<string> {
+	const reader = body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		while (total < maxBytes) {
+			const { done, value } = await reader.read();
+			if (done || !value) break;
+			const take = total + value.byteLength > maxBytes ? value.subarray(0, maxBytes - total) : value;
+			chunks.push(take);
+			total += take.byteLength;
+			if (total >= maxBytes) break;
+		}
+	} catch {
+		// Ignore mid-stream errors if we already got headers/partial content
+	} finally {
+		reader.cancel().catch(() => {});
+	}
+	if (chunks.length === 0) return "";
+	return Buffer.concat(chunks).toString("utf8");
+}
+
+function isTextualContentType(ct: string): boolean {
+	return /text\/|application\/(json|xml|xhtml\+xml|javascript)|\+json|\+xml/i.test(ct);
+}
+
 async function request(
 	url: string,
 	method: "HEAD" | "GET",
 	opts: HttpCheckOptions,
 	signal: AbortSignal,
-): Promise<number> {
+	readBody = false,
+): Promise<{ status: number; pageContent?: string }> {
 	const controller = new AbortController();
 	const onAbort = () => controller.abort(signal.reason);
 	if (signal.aborted) controller.abort(signal.reason);
@@ -141,12 +205,20 @@ async function request(
 				"accept-language": "en-US,en;q=0.9",
 			},
 		});
-		// Never read the body: stop the download as soon as headers arrive.
-		if (res.body) {
+		let pageContent: string | undefined;
+		const contentType = res.headers.get("content-type") ?? "";
+		if (readBody && method === "GET" && res.status >= 200 && res.status < 300 && res.body && isTextualContentType(contentType)) {
+			const raw = await readBoundedText(res.body, MAX_CONTENT_BYTES);
+			controller.abort();
+			if (raw) {
+				const extracted = extractTextFromBody(raw, contentType);
+				if (extracted) pageContent = extracted;
+			}
+		} else if (res.body) {
 			controller.abort();
 			res.body.cancel().catch(() => {});
 		}
-		return res.status;
+		return { status: res.status, ...(pageContent ? { pageContent } : {}) };
 	} finally {
 		signal.removeEventListener("abort", onAbort);
 	}
@@ -163,9 +235,19 @@ export async function checkUrl(url: string, opts: HttpCheckOptions): Promise<Htt
 	const timeout = AbortSignal.timeout(opts.timeoutMs);
 	const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
 
+	if (opts.fetchContent) {
+		try {
+			const { status, pageContent } = await request(url, "GET", opts, signal, true);
+			return { url, verdict: classifyStatus(status), status, ...(pageContent ? { pageContent } : {}) };
+		} catch (err) {
+			const c = classifyError(timeout.aborted ? timeout.reason : err, host, opts.proxyConfigured);
+			return { url, verdict: c.verdict, error: c.error, errorKind: c.kind };
+		}
+	}
+
 	let headResult: HttpCheckResult;
 	try {
-		const status = await request(url, "HEAD", opts, signal);
+		const { status } = await request(url, "HEAD", opts, signal);
 		headResult = { url, verdict: classifyStatus(status), status };
 		if (headResult.verdict === "OK") return headResult;
 	} catch (err) {
@@ -178,7 +260,7 @@ export async function checkUrl(url: string, opts: HttpCheckOptions): Promise<Htt
 
 	// HEAD is unreliable (405/501, bot filters, some servers 404 on HEAD only): confirm with GET.
 	try {
-		const status = await request(url, "GET", opts, signal);
+		const { status } = await request(url, "GET", opts, signal);
 		return { url, verdict: classifyStatus(status), status };
 	} catch (err) {
 		if (headResult.status !== undefined && headResult.verdict === "NOT_FOUND") {

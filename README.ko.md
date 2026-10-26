@@ -2,12 +2,12 @@
 
 [English](./README.md) | 한국어
 
-에이전트의 최종 답변에 포함된 모든 URL을 검증하여 환각(hallucinated) 출처 링크를 잡아내는 [Pi](https://pi.dev) 확장(extension)입니다.
+에이전트의 최종 답변에 포함된 모든 URL을 검증하여 환각(hallucinated) 출처 링크나 사실과 다르게 인용된 링크를 잡아내는 [Pi](https://pi.dev) 확장(extension)입니다.
 
-LLM은 기억만으로 임의의 URL이 실제로 존재하는지 알 수 없으며, 주소 형태가 그럴듯한지만 추측할 수 있습니다. 따라서 `pi-guard`는 **먼저 HTTP를 통해 URL을 확인**하고, HTTP만으로 판단할 수 없는 경우(403/429 봇 차단, 5xx 서버 오류, 타임아웃, 네트워크 오류 등)에만 **LLM에게 보조 판정**을 요청합니다.
+LLM은 기억만으로 임의의 URL이 실제로 존재하는지 알 수 없으며, 주소 형태가 그럴듯한지만 추측할 수 있습니다. 따라서 `pi-guard`는 **먼저 HTTP를 통해 URL을 확인**하고, 검증 LLM을 통해 **인용 내용 일치 여부(Content Grounding)**(실제 페이지 본문이 에이전트의 주장을 뒷받침하는지 및 soft-404가 아닌지)와 HTTP만으로 판단할 수 없는 경우(403/429 봇 차단, 5xx 서버 오류, 타임아웃, 네트워크 오류 등)의 **실존 여부 폴백 판정**을 수행합니다.
 
-인용된 URL이 존재하지 않는 것으로 판명되면(HTTP `404`, `410`, DNS `ENOTFOUND` 또는 검증 모델의 `NOT_EXISTS` 판정):
-- **`rewrite`** (기본값): 에이전트에게 피드백 메시지를 전달하여 가짜 링크를 제거하거나 실제 확인된 링크로 교체해 답변을 다시 작성하도록 요청합니다(사용자 프롬프트당 최대 `maxRewrites`회까지 재시도하며, 초과 시 `warn`으로 강등).
+인용된 URL이 검증에 실패하면(HTTP `404`, `410`, DNS `ENOTFOUND` 또는 검증 모델의 `NOT_EXISTS` / `CONTRADICTED` 판정):
+- **`rewrite`** (기본값): 에이전트에게 피드백 메시지를 전달하여 가짜 링크나 잘못된 주장을 수정해 답변을 다시 작성하도록 요청합니다(사용자 프롬프트당 최대 `maxRewrites`회까지 재시도하며, 초과 시 `warn`으로 강등).
 - **`warn`**: 경고 알림만 표시하고 답변은 그대로 유지합니다.
 
 ## 설치
@@ -36,11 +36,11 @@ pi -e ./
    - 예약된 예시 도메인(RFC 2606 / RFC 6761): `example.com/.net/.org`, `*.test`, `*.example`, `*.invalid`, `*.localhost`.
    - `bypassDomains` 설정과 일치하는 호스트 또는 경로 접두사(예: `"*.mycompany.com"`, `"github.com/private-repo"`).
    - 코드 블록 및 인라인 코드 안의 URL(`skipCodeBlocks: true`일 때).
-3. **HTTP 확인** (`HEAD` 요청 후 필요 시 본문을 읽지 않고 즉시 취소하는 `GET` 폴백):
-   - `2xx` / `3xx → 2xx` → `OK` (통과)
+3. **HTTP 확인** (`verifyContent: true`일 때는 `GET`으로 텍스트 일부 추출, `false`일 때는 `HEAD` 요청 후 필요 시 본문을 읽지 않고 즉시 취소하는 `GET` 폴백):
+   - `2xx` / `3xx → 2xx` → `OK` (`verifyContent: true`이면 페이지 텍스트 추출)
    - `404`, `410`, DNS `ENOTFOUND` → `NOT_FOUND` (실패)
    - `401`, `403`, `429`, `5xx`, 타임아웃, TLS/프록시/네트워크 오류 → `UNCERTAIN` (보류)
-4. **LLM 폴백 판정**: 모든 `UNCERTAIN` URL을 한 번의 호출로 일괄 판정합니다(`EXISTS` | `NOT_EXISTS` | `UNKNOWN`). `UNKNOWN`이거나 모델/인증/파싱 오류가 발생하면 세션이 멈추지 않도록 통과(fail-open) 처리합니다.
+4. **LLM 판정**: `UNCERTAIN` URL(실존 판정: `EXISTS` | `NOT_EXISTS` | `UNKNOWN`)과 `verifyContent: true`일 때 본문이 추출된 `OK` URL(인용 내용 검증: `SUPPORTED` | `CONTRADICTED` | `NOT_EXISTS`(soft-404) | `UNKNOWN`)을 한 번의 호출로 일괄 판정합니다. `UNKNOWN`이거나 모델/인증/파싱 오류가 발생하면 세션이 멈추지 않도록 통과(fail-open) 처리합니다.
 
 ## 설정
 
@@ -53,6 +53,7 @@ pi -e ./
   "maxRewrites": 1,
   "maxUrls": 20,
   "skipCodeBlocks": true,
+  "verifyContent": true,
   "bypassDomains": [
     "*.mycompany.com",
     "jira.mycompany.io"
@@ -83,6 +84,7 @@ pi -e ./
 | `maxRewrites` | `1` | 사용자 프롬프트당 최대 재작성 요청 횟수입니다. 초과 시 `"warn"`으로 강등됩니다. |
 | `maxUrls` | `20` | 답변 하나에서 검사할 최대 URL 개수입니다. |
 | `skipCodeBlocks` | `true` | 펜스 코드 블록 및 인라인 코드 내부의 URL을 무시합니다. |
+| `verifyContent` | `true` | HTTP 200 응답 페이지의 본문 텍스트를 추출해 에이전트가 해당 URL 주변에서 주장한 내용을 실제로 뒷받침하는지(및 soft-404가 아닌지) 검증 LLM으로 대조합니다. |
 | `bypassDomains` | `[]` | 검사를 건너뛸 도메인 또는 경로 접두사 목록입니다(`"foo.com"`은 루트 도메인과 서브도메인 모두 매칭, `"*.foo.com"`은 서브도메인만 매칭, `"github.com/org/repo"`는 해당 경로 하위만 매칭). |
 | `verifier.provider` / `verifier.model` | `null` | `UNCERTAIN` URL 판정에 사용할 모델입니다. `null`이면 현재 세션 모델(`ctx.model`)을 사용합니다. 지정한 모델을 찾을 수 없거나 인증 정보가 없으면 경고를 띄우고 `ctx.model`로 대체합니다. |
 | `verifier.thinking` | `"low"` | `"off"` \| `"minimal"` \| `"low"` \| `"medium"` \| `"high"` \| `"xhigh"` \| `"max"`. `"off"`이거나 모델이 추론(reasoning)을 지원하지 않으면 생략됩니다. |

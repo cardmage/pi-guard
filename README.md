@@ -2,12 +2,12 @@
 
 English | [한국어](./README.ko.md)
 
-A [Pi](https://pi.dev) extension that checks every URL in the agent's final answer and catches hallucinated citations.
+A [Pi](https://pi.dev) extension that checks every URL in the agent's final answer and catches hallucinated or misrepresented citations.
 
-LLMs cannot know from memory alone whether an arbitrary URL resolves—they can only judge whether it looks plausible. `pi-guard` therefore **checks URLs over HTTP first** and asks an LLM **only** when HTTP is inconclusive (403/429 bot blocks, 5xx errors, timeouts, network failures).
+LLMs cannot know from memory alone whether an arbitrary URL resolves—they can only judge whether it looks plausible. `pi-guard` therefore **checks URLs over HTTP first** and uses the verifier LLM to check **content grounding** (whether the fetched page actually supports the claim around the URL and is not a soft-404) as well as **existence fallback** when HTTP is inconclusive (403/429 bot blocks, 5xx errors, timeouts, network failures).
 
-When a cited URL does not exist (`404`, `410`, or `ENOTFOUND` on HTTP, or `NOT_EXISTS` from the verifier model):
-- **`rewrite`** (default): appends a feedback message and asks the agent to rewrite the answer without the fabricated link (up to `maxRewrites` times per user prompt, then degrades to `warn`).
+When a cited URL fails verification (`404`, `410`, or `ENOTFOUND` on HTTP, or `NOT_EXISTS` / `CONTRADICTED` from the verifier model):
+- **`rewrite`** (default): appends a feedback message and asks the agent to rewrite the answer without the fabricated link or inaccurate claim (up to `maxRewrites` times per user prompt, then degrades to `warn`).
 - **`warn`**: shows a warning notification and leaves the answer as-is.
 
 ## Install
@@ -36,11 +36,11 @@ On `agent_before_settle` (when a run finishes with `outcome === "completed"`):
    - Reserved example domains (RFC 2606 / RFC 6761): `example.com/.net/.org`, `*.test`, `*.example`, `*.invalid`, `*.localhost`.
    - Hosts or URL path prefixes matching `bypassDomains` (e.g. `"*.mycompany.com"`, `"github.com/private-repo"`).
    - Code blocks and inline code spans (when `skipCodeBlocks: true`).
-3. **HTTP check** (`HEAD`, falling back to `GET` with immediate body cancel):
-   - `2xx` / `3xx → 2xx` → `OK`
+3. **HTTP check** (`GET` with bounded text extraction when `verifyContent: true`, or `HEAD` falling back to `GET` with immediate body cancel when `verifyContent: false`):
+   - `2xx` / `3xx → 2xx` → `OK` (extracts readable text snippet when `verifyContent: true`)
    - `404`, `410`, DNS `ENOTFOUND` → `NOT_FOUND` (fail)
    - `401`, `403`, `429`, `5xx`, timeouts, TLS/proxy/network errors → `UNCERTAIN`
-4. **LLM fallback**: all `UNCERTAIN` URLs are judged in a single call (`EXISTS` | `NOT_EXISTS` | `UNKNOWN`). `UNKNOWN` and any model/auth/parse error fail open so the session never gets stuck.
+4. **LLM verification**: `UNCERTAIN` URLs (existence check: `EXISTS` | `NOT_EXISTS` | `UNKNOWN`) and `OK` URLs with extracted page text when `verifyContent: true` (content grounding check: `SUPPORTED` | `CONTRADICTED` | `NOT_EXISTS` for soft-404s | `UNKNOWN`) are judged in a single batch call. `UNKNOWN` and any model/auth/parse error fail open so the session never gets stuck.
 
 ## Configuration
 
@@ -53,6 +53,7 @@ Create `~/.pi/agent/pi-guard.json` (or `%USERPROFILE%\.pi\agent\pi-guard.json` o
   "maxRewrites": 1,
   "maxUrls": 20,
   "skipCodeBlocks": true,
+  "verifyContent": true,
   "bypassDomains": [
     "*.mycompany.com",
     "jira.mycompany.io"
@@ -83,6 +84,7 @@ Create `~/.pi/agent/pi-guard.json` (or `%USERPROFILE%\.pi\agent\pi-guard.json` o
 | `maxRewrites` | `1` | Max rewrite requests per user prompt before degrading to `"warn"`. |
 | `maxUrls` | `20` | Max URLs checked per answer. |
 | `skipCodeBlocks` | `true` | Ignore URLs inside fenced and inline code. |
+| `verifyContent` | `true` | Fetch readable text from HTTP 200 pages and ask the verifier LLM whether the page supports the assistant's claim around the URL (and is not a soft-404). |
 | `bypassDomains` | `[]` | Domains or path prefixes to skip (`"foo.com"` matches apex + subdomains; `"*.foo.com"` matches subdomains only; `"github.com/org/repo"` matches only that path prefix). |
 | `verifier.provider` / `verifier.model` | `null` | Model used for `UNCERTAIN` URLs. `null` uses the current session model (`ctx.model`). Falls back to `ctx.model` with a warning if not found or unauthenticated. |
 | `verifier.thinking` | `"low"` | `"off"` \| `"minimal"` \| `"low"` \| `"medium"` \| `"high"` \| `"xhigh"` \| `"max"`. Omitted when `"off"` or unsupported by the model. |

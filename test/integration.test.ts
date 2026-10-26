@@ -408,6 +408,45 @@ describe("piGuard pipeline", () => {
 		}
 	});
 
+	it("verifies page content against the assistant's claim when verifyContent is true", async () => {
+		const h = await createHarness({
+			config: {
+				mode: "rewrite",
+				maxRewrites: 1,
+				verifyContent: true,
+				http: { proxy: hProxy(forwardProxy) },
+			},
+			registryOpts: {
+				reply: (prompt) => {
+					expect(prompt).toContain("Widgets support only JSON format in v2.");
+					return JSON.stringify({
+						results: [
+							{
+								url: "http://docs.foo.com/html",
+								verdict: "CONTRADICTED",
+								reason: "Page says Widgets support only JSON in v2, not XML",
+							},
+						],
+					});
+				},
+			},
+		});
+		try {
+			await h.sessionStart();
+			await h.beforeAgentStart({ type: "before_agent_start", messageType: "user", prompt: "q", systemPrompt: "", systemPromptOptions: {} as never });
+
+			const ev = makeSettleEvent("According to http://docs.foo.com/html, Widgets v2 supports XML natively.");
+			const res = await h.beforeSettle(ev);
+			expect(res?.continue).toBe(true);
+			const msg = (res?.entries?.[0] as { content: string }).content;
+			expect(msg).toContain("http://docs.foo.com/html");
+			expect(msg).toContain("Page says Widgets support only JSON in v2, not XML");
+		} finally {
+			await h.sessionShutdown();
+			await rm(h.agentDir, { recursive: true, force: true });
+		}
+	});
+
 	it("aborts when the user presses Escape in the TUI", async () => {
 		const h = await createHarness({
 			config: {

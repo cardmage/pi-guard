@@ -1,6 +1,6 @@
 import { Agent } from "undici";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { checkUrl, checkUrls, classifyError, classifyStatus, mapLimit } from "../src/http-check.ts";
+import { checkUrl, checkUrls, classifyError, classifyStatus, extractTextFromBody, mapLimit } from "../src/http-check.ts";
 import { startTargetServer, type TargetServer } from "./helpers/servers.ts";
 
 let server: TargetServer;
@@ -119,6 +119,24 @@ describe("checkUrl against a local server", () => {
 		// Indirect: the request succeeds with a custom UA (header validity).
 		const r = await checkUrl(`${server.url}/ok`, { ...opts(), userAgent: "PiGuardTest/1.0" });
 		expect(r.verdict).toBe("OK");
+	});
+
+	it("extracts readable pageContent when fetchContent is true", async () => {
+		const r = await checkUrl(`${server.url}/html`, { ...opts(), fetchContent: true });
+		expect(r.verdict).toBe("OK");
+		expect(r.status).toBe(200);
+		expect(r.pageContent).toContain("Widget v2 Guide");
+		expect(r.pageContent).toContain("Widgets support only JSON format in v2.");
+		expect(r.pageContent).not.toContain("alert(1)");
+		expect(r.pageContent).not.toContain("color:red");
+	});
+
+	it("extractTextFromBody strips tags, scripts, styles and decodes entities", () => {
+		const out = extractTextFromBody(
+			"<html><head><title>Doc &amp; API</title></head><body><script>var x=1;</script><p>Hello &lt;world&gt;!</p></body></html>",
+			"text/html",
+		);
+		expect(out).toBe("Doc & API — Hello <world>!");
 	});
 });
 

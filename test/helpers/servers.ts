@@ -25,6 +25,14 @@ export async function startTargetServer(): Promise<TargetServer> {
 		switch (path) {
 			case "/ok":
 				return send(200);
+			case "/html":
+				res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+				res.end(
+					method === "HEAD"
+						? undefined
+						: "<html><head><title>Widget v2 Guide</title><style>body{color:red}</style></head><body><script>alert(1)</script><h1>Overview</h1><p>Widgets support only JSON format in v2.</p></body></html>",
+				);
+				return;
 			case "/redirect":
 				return send(301, { location: "/ok" });
 			case "/redirect-missing":
