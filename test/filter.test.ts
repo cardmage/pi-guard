@@ -53,10 +53,18 @@ describe("matchesBypass", () => {
 		expect(matchesBypass("a.foo.com", [".foo.com"])).toBe(true);
 	});
 
-	it("supports glob patterns, case-insensitivity and URL-ish entries", () => {
+	it("supports glob patterns, case-insensitivity and path-scoped entries", () => {
 		expect(matchesBypass("git-01.dev.io", ["git-*.dev.io"])).toBe(true);
 		expect(matchesBypass("Docs.Foo.COM", ["docs.foo.com"])).toBe(true);
-		expect(matchesBypass("docs.foo.com", ["https://docs.foo.com/path"])).toBe(true);
+		expect(matchesBypass("docs.foo.com", ["https://docs.foo.com/"])).toBe(true);
+		expect(matchesBypass("https://github.com/private-repo", ["github.com/private-repo"])).toBe(true);
+		expect(matchesBypass("https://github.com/private-repo/issues/1", ["github.com/private-repo"])).toBe(true);
+		expect(matchesBypass("https://github.com/private-repo/", ["https://github.com/private-repo/"])).toBe(true);
+		expect(matchesBypass("https://github.com/other-repo", ["github.com/private-repo"])).toBe(false);
+		expect(matchesBypass("https://github.com/private-repo-2", ["github.com/private-repo"])).toBe(false);
+		expect(matchesBypass("github.com", ["github.com/private-repo"])).toBe(false);
+		expect(matchesBypass("https://github.com/org/private-a/pulls", ["github.com/org/private-*"])).toBe(true);
+		expect(matchesBypass("https://github.com/org/public-a/pulls", ["github.com/org/private-*"])).toBe(false);
 		expect(matchesBypass("anything.com", ["*"])).toBe(true);
 		expect(matchesBypass("foo.com", [])).toBe(false);
 	});
@@ -64,11 +72,11 @@ describe("matchesBypass", () => {
 
 describe("skipReason", () => {
 	it("classifies in priority order", () => {
-		const ctx = new Set(["https://seen.com/a"]);
-		expect(skipReason("http://localhost:3000/", "x", [], ctx)).toBe("private");
-		expect(skipReason("https://example.com/x", "x", [], ctx)).toBe("example");
-		expect(skipReason("https://wiki.corp.com/x", "x", ["corp.com"], ctx)).toBe("bypass");
-		expect(skipReason("https://seen.com/a", "https://seen.com/a", [], ctx)).toBe("context");
-		expect(skipReason("https://new.com/a", "https://new.com/a", [], ctx)).toBeUndefined();
+		expect(skipReason("http://localhost:3000/", [])).toBe("private");
+		expect(skipReason("https://example.com/x", [])).toBe("example");
+		expect(skipReason("https://wiki.corp.com/x", ["corp.com"])).toBe("bypass");
+		expect(skipReason("https://github.com/private-repo/blob/main/a.ts", ["github.com/private-repo"])).toBe("bypass");
+		expect(skipReason("https://github.com/public-repo/blob/main/a.ts", ["github.com/private-repo"])).toBeUndefined();
+		expect(skipReason("https://new.com/a", [])).toBeUndefined();
 	});
 });

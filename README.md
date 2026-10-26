@@ -34,8 +34,7 @@ On `agent_before_settle` (when a run finishes with `outcome === "completed"`):
 2. **Filter out URLs that should never be checked**:
    - Private/local hosts: `localhost`, `127.*`, `10.*`, `172.16–31.*`, `192.168.*`, `169.254.*`, `::1`, `fc00::/7`, `fe80::/10`, single-label hosts, `*.local`, `*.internal`, `*.corp`, `*.lan`.
    - Reserved example domains (RFC 2606 / RFC 6761): `example.com/.net/.org`, `*.test`, `*.example`, `*.invalid`, `*.localhost`.
-   - Hosts matching `bypassDomains`.
-   - **Context whitelist**: any URL that already appeared in the conversation's user messages, tool results (`web_search`, `fetch_content`, `read`, `bash`, …), or assistant tool-call arguments. If the user gave the URL or a tool actually read it, it is trusted.
+   - Hosts or URL path prefixes matching `bypassDomains` (e.g. `"*.mycompany.com"`, `"github.com/private-repo"`).
    - Code blocks and inline code spans (when `skipCodeBlocks: true`).
 3. **HTTP check** (`HEAD`, falling back to `GET` with immediate body cancel):
    - `2xx` / `3xx → 2xx` → `OK`
@@ -84,7 +83,7 @@ Create `~/.pi/agent/pi-guard.json` (or `%USERPROFILE%\.pi\agent\pi-guard.json` o
 | `maxRewrites` | `1` | Max rewrite requests per user prompt before degrading to `"warn"`. |
 | `maxUrls` | `20` | Max URLs checked per answer. |
 | `skipCodeBlocks` | `true` | Ignore URLs inside fenced and inline code. |
-| `bypassDomains` | `[]` | Domains to skip (`"foo.com"` matches apex + subdomains; `"*.foo.com"` matches subdomains only). |
+| `bypassDomains` | `[]` | Domains or path prefixes to skip (`"foo.com"` matches apex + subdomains; `"*.foo.com"` matches subdomains only; `"github.com/org/repo"` matches only that path prefix). |
 | `verifier.provider` / `verifier.model` | `null` | Model used for `UNCERTAIN` URLs. `null` uses the current session model (`ctx.model`). Falls back to `ctx.model` with a warning if not found or unauthenticated. |
 | `verifier.thinking` | `"low"` | `"off"` \| `"minimal"` \| `"low"` \| `"medium"` \| `"high"` \| `"xhigh"` \| `"max"`. Omitted when `"off"` or unsupported by the model. |
 | `verifier.systemPrompt` | `null` | Replaces the built-in verifier system prompt when set. |

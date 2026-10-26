@@ -14,7 +14,6 @@ import { closeDispatcher, createDispatcher, type DispatcherBuild } from "./dispa
 import {
 	assistantText,
 	CUSTOM_TYPE,
-	collectContextUrls,
 	type ExtractedUrl,
 	extractUrls,
 	type LooseMessage,
@@ -247,9 +246,8 @@ export default function piGuard(pi: ExtensionAPI): void {
 		const extracted = extractUrls(answer, { skipCodeBlocks: cfg.skipCodeBlocks });
 		if (extracted.length === 0) return undefined;
 
-		const contextKeys = collectContextUrls(messages);
 		const candidates = extracted
-			.filter((u) => skipReason(u.url, u.key, cfg.bypassDomains, contextKeys) === undefined)
+			.filter((u) => skipReason(u.url, cfg.bypassDomains) === undefined)
 			.slice(0, cfg.maxUrls);
 		if (candidates.length === 0) return undefined;
 

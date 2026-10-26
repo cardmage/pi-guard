@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
 	assistantText,
 	canonicalKey,
-	collectContextUrls,
 	extractUrls,
 	lastAssistantIndex,
 	maskCode,
@@ -119,7 +118,7 @@ describe("helpers", () => {
 	});
 });
 
-describe("context whitelist", () => {
+describe("context message helpers", () => {
 	const messages = [
 		{ role: "user", content: "Check https://user-given.com/page please" },
 		{
@@ -130,30 +129,8 @@ describe("context whitelist", () => {
 			],
 		},
 		{ role: "toolResult", toolCallId: "1", toolName: "fetch", content: [{ type: "text", text: "Found https://tool-result.com/c" }], isError: false },
-		{ role: "custom", customType: "pi-guard", content: "bad https://our-feedback.com/d" },
-		{ role: "custom", customType: "other-ext", content: [{ type: "text", text: "https://other-ext.com/e" }] },
-		{ role: "bashExecution", command: "curl https://bash-cmd.com/f", output: "" },
-		{ role: "compactionSummary", summary: "Read https://summary.com/g" },
 		{ role: "assistant", content: [{ type: "text", text: "Final https://final.com/h" }] },
 	];
-
-	it("collects URLs from user, tool results, tool-call args, other custom messages, summaries", () => {
-		const keys = collectContextUrls(messages);
-		for (const u of [
-			"https://user-given.com/page",
-			"https://tool-arg.com/a",
-			"https://deep.com/b",
-			"https://tool-result.com/c",
-			"https://other-ext.com/e",
-			"https://bash-cmd.com/f",
-			"https://summary.com/g",
-		]) {
-			expect(keys.has(canonicalKey(u)), u).toBe(true);
-		}
-		expect(keys.has(canonicalKey("https://assistant-prose.com/x"))).toBe(false);
-		expect(keys.has(canonicalKey("https://our-feedback.com/d"))).toBe(false);
-		expect(keys.has(canonicalKey("https://final.com/h"))).toBe(false);
-	});
 
 	it("finds the last assistant message text", () => {
 		const idx = lastAssistantIndex(messages);

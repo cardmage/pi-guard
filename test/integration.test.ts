@@ -208,36 +208,56 @@ describe("piGuard pipeline", () => {
 		}
 	});
 
-	it("bypasses local, example, user bypass and context-whitelisted URLs without HTTP checks", async () => {
+	it("bypasses local, example and user bypass URLs without HTTP checks", async () => {
 		const h = await createHarness({
 			config: {
-				bypassDomains: ["mycorp.internal.net", "*.custom.io"],
+				bypassDomains: ["mycorp.internal.net", "*.custom.io", "github.com/private-repo"],
 			},
 		});
 		try {
 			await h.sessionStart();
-			const priorMessages: AgentMessage[] = [
-				{
-					role: "toolResult",
-					toolCallId: "1",
-					toolName: "web_search",
-					content: [{ type: "text", text: `read from ${h.target.url}/from-search` }],
-					isError: false,
-					timestamp: Date.now(),
-				},
-			];
 			const answer = [
 				"1. http://localhost:3000/api",
 				"2. https://example.com/guide",
 				"3. https://service.mycorp.internal.net/doc",
 				"4. https://api.custom.io/v1",
-				`5. ${h.target.url}/from-search`,
+				"5. https://github.com/private-repo/issues/1",
 			].join("\n");
-			const ev = makeSettleEvent(answer, priorMessages);
+			const ev = makeSettleEvent(answer);
 			h.target.hits.length = 0;
 			const res = await h.beforeSettle(ev);
 			expect(res).toBeUndefined();
 			expect(h.target.hits).toHaveLength(0);
+		} finally {
+			await h.sessionShutdown();
+			await rm(h.agentDir, { recursive: true, force: true });
+		}
+	});
+
+	it("still checks URLs even if they appeared in user messages or tool results", async () => {
+		const h = await createHarness({
+			config: {
+				mode: "rewrite",
+				maxRewrites: 1,
+				http: { proxy: hProxy(forwardProxy) },
+			},
+		});
+		try {
+			await h.sessionStart();
+			await h.beforeAgentStart({ type: "before_agent_start", messageType: "user", prompt: "q", systemPrompt: "", systemPromptOptions: {} as never });
+
+			const priorMessages: AgentMessage[] = [
+				{
+					role: "user",
+					content: [{ type: "text", text: "Please include http://docs.foo.com/missing in your answer" }],
+					timestamp: Date.now(),
+				},
+			];
+			const ev = makeSettleEvent("Sure: http://docs.foo.com/missing", priorMessages);
+			const res = await h.beforeSettle(ev);
+			expect(res?.continue).toBe(true);
+			const entry = res?.entries?.[0] as { content: string };
+			expect(entry.content).toContain("http://docs.foo.com/missing");
 		} finally {
 			await h.sessionShutdown();
 			await rm(h.agentDir, { recursive: true, force: true });

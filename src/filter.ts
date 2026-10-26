@@ -74,61 +74,105 @@ export function isExampleDomain(hostname: string): boolean {
 	return RESERVED_TLDS.includes(tld);
 }
 
-function normalizePattern(pattern: string): string {
+interface ParsedPattern {
+	host: string;
+	pathPrefix: string;
+}
+
+function parseBypassPattern(pattern: string): ParsedPattern | undefined {
 	let p = pattern.trim().toLowerCase();
-	// Tolerate full URLs: "https://foo.com/path" → "foo.com"
+	if (!p) return undefined;
 	p = p.replace(/^[a-z][a-z0-9+.-]*:\/\//, "");
-	p = p.replace(/[/?#].*$/, "");
-	p = p.replace(/:\d+$/, "");
-	if (p.startsWith(".")) p = `*${p}`;
-	if (p.length > 1 && p.endsWith(".")) p = p.slice(0, -1);
-	return p;
+	p = p.replace(/[?#].*$/, "");
+
+	const slashIdx = p.indexOf("/");
+	let hostPart = slashIdx === -1 ? p : p.slice(0, slashIdx);
+	let pathPrefix = slashIdx === -1 ? "" : p.slice(slashIdx);
+
+	hostPart = hostPart.replace(/:\d+$/, "");
+	if (hostPart.startsWith(".")) hostPart = `*${hostPart}`;
+	if (hostPart.length > 1 && hostPart.endsWith(".")) hostPart = hostPart.slice(0, -1);
+	if (!hostPart) return undefined;
+
+	if (pathPrefix === "/") pathPrefix = "";
+	else if (pathPrefix.length > 1 && pathPrefix.endsWith("/")) pathPrefix = pathPrefix.slice(0, -1);
+
+	return { host: hostPart, pathPrefix };
+}
+
+function matchesHostPattern(h: string, p: string): boolean {
+	if (p === "*") return true;
+	if (p.startsWith("*.") && !p.slice(2).includes("*")) {
+		return h.endsWith(p.slice(1));
+	}
+	if (p.includes("*")) {
+		const re = new RegExp(`^${p.split("*").map((s) => s.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`);
+		return re.test(h);
+	}
+	return h === p || h.endsWith(`.${p}`);
+}
+
+function matchesPathPrefix(pathname: string, pathPrefix: string): boolean {
+	if (!pathPrefix) return true;
+	const path = pathname.toLowerCase();
+	if (pathPrefix.includes("*")) {
+		const re = new RegExp(`^${pathPrefix.split("*").map((s) => s.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")}(?:/|$)`);
+		return re.test(path);
+	}
+	return path === pathPrefix || path.startsWith(`${pathPrefix}/`);
 }
 
 /**
  * Bypass list matching.
  * - `foo.com`   → `foo.com` and all its subdomains
  * - `*.foo.com` / `.foo.com` → subdomains of `foo.com` only
+ * - `foo.com/path` → only URLs on `foo.com` (and subdomains) whose path is `/path` or under `/path/...`
  * - other `*` → glob (`*` matches any characters)
  */
-export function matchesBypass(hostname: string, patterns: readonly string[]): boolean {
-	const h = cleanHost(hostname);
+export function matchesBypass(urlOrHost: string, patterns: readonly string[]): boolean {
+	let h: string;
+	let pathname = "/";
+	if (/^[a-z][a-z0-9+.-]*:\/\//i.test(urlOrHost)) {
+		try {
+			const u = new URL(urlOrHost);
+			h = cleanHost(u.hostname);
+			pathname = u.pathname || "/";
+		} catch {
+			return false;
+		}
+	} else {
+		const slashIdx = urlOrHost.indexOf("/");
+		if (slashIdx === -1) {
+			h = cleanHost(urlOrHost);
+		} else {
+			h = cleanHost(urlOrHost.slice(0, slashIdx));
+			pathname = urlOrHost.slice(slashIdx);
+		}
+	}
+	if (!h) return false;
+
 	for (const raw of patterns) {
-		const p = normalizePattern(raw);
-		if (!p) continue;
-		if (p === "*") return true;
-		if (p.startsWith("*.") && !p.slice(2).includes("*")) {
-			if (h.endsWith(p.slice(1))) return true;
-			continue;
+		const parsed = parseBypassPattern(raw);
+		if (!parsed) continue;
+		if (matchesHostPattern(h, parsed.host) && matchesPathPrefix(pathname, parsed.pathPrefix)) {
+			return true;
 		}
-		if (p.includes("*")) {
-			const re = new RegExp(`^${p.split("*").map((s) => s.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`);
-			if (re.test(h)) return true;
-			continue;
-		}
-		if (h === p || h.endsWith(`.${p}`)) return true;
 	}
 	return false;
 }
 
-export type SkipReason = "private" | "example" | "bypass" | "context" | "invalid";
+export type SkipReason = "private" | "example" | "bypass" | "invalid";
 
 /** Returns why a URL must not be checked, or `undefined` if it should be checked. */
-export function skipReason(
-	url: string,
-	key: string,
-	bypassDomains: readonly string[],
-	contextKeys: ReadonlySet<string>,
-): SkipReason | undefined {
-	let host: string;
+export function skipReason(url: string, bypassDomains: readonly string[]): SkipReason | undefined {
+	let u: URL;
 	try {
-		host = new URL(url).hostname;
+		u = new URL(url);
 	} catch {
 		return "invalid";
 	}
-	if (isPrivateOrLocal(host)) return "private";
-	if (isExampleDomain(host)) return "example";
-	if (matchesBypass(host, bypassDomains)) return "bypass";
-	if (contextKeys.has(key)) return "context";
+	if (isPrivateOrLocal(u.hostname)) return "private";
+	if (isExampleDomain(u.hostname)) return "example";
+	if (matchesBypass(url, bypassDomains)) return "bypass";
 	return undefined;
 }

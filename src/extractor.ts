@@ -1,6 +1,5 @@
 /**
- * URL extraction from assistant text and collection of "already seen" URLs
- * from the conversation context.
+ * URL extraction from assistant text.
  */
 
 /** A URL found in a piece of text. */
@@ -279,60 +278,6 @@ function textOfContent(content: unknown): string {
 		}
 	}
 	return parts.join("\n");
-}
-
-function collectStrings(value: unknown, out: string[], depth = 0): void {
-	if (depth > 20) return;
-	if (typeof value === "string") out.push(value);
-	else if (Array.isArray(value)) for (const v of value) collectStrings(v, out, depth + 1);
-	else if (value && typeof value === "object") for (const v of Object.values(value)) collectStrings(v, out, depth + 1);
-}
-
-/** Texts in a context message that represent "known" sources (not assistant prose). */
-function knownTexts(msg: LooseMessage): string[] {
-	switch (msg.role) {
-		case "user":
-		case "toolResult":
-			return [textOfContent(msg.content)];
-		case "assistant": {
-			const out: string[] = [];
-			if (Array.isArray(msg.content)) {
-				for (const part of msg.content) {
-					if (part && typeof part === "object" && (part as { type?: unknown }).type === "toolCall") {
-						collectStrings((part as { arguments?: unknown }).arguments, out);
-					}
-				}
-			}
-			return out;
-		}
-		case "custom":
-			// Our own feedback lists the bad URLs; never whitelist it.
-			return msg.customType === CUSTOM_TYPE ? [] : [textOfContent(msg.content)];
-		case "bashExecution":
-			return [String(msg.command ?? ""), String(msg.output ?? "")];
-		case "branchSummary":
-		case "compactionSummary":
-			// Summaries replace tool results that were read before compaction.
-			return [String(msg.summary ?? "")];
-		default:
-			return [];
-	}
-}
-
-/**
- * Collects canonical keys of URLs that already appear in the context as user input,
- * tool results, tool-call arguments, or other extensions' messages.
- */
-export function collectContextUrls(messages: readonly LooseMessage[]): Set<string> {
-	const keys = new Set<string>();
-	for (const msg of messages) {
-		if (!msg || typeof msg !== "object") continue;
-		for (const text of knownTexts(msg)) {
-			if (!text) continue;
-			for (const u of extractUrls(text, { skipCodeBlocks: false })) keys.add(u.key);
-		}
-	}
-	return keys;
 }
 
 /** Index of the last assistant message, or -1. */

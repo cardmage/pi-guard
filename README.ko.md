@@ -34,8 +34,7 @@ pi -e ./
 2. **검증 제외 대상 필터링**:
    - 사설/로컬 호스트: `localhost`, `127.*`, `10.*`, `172.16–31.*`, `192.168.*`, `169.254.*`, `::1`, `fc00::/7`, `fe80::/10`, 단일 라벨 호스트, `*.local`, `*.internal`, `*.corp`, `*.lan`.
    - 예약된 예시 도메인(RFC 2606 / RFC 6761): `example.com/.net/.org`, `*.test`, `*.example`, `*.invalid`, `*.localhost`.
-   - `bypassDomains` 설정과 일치하는 호스트.
-   - **컨텍스트 화이트리스트**: 대화의 사용자 메시지, 도구 실행 결과(`web_search`, `fetch_content`, `read`, `bash` 등), 또는 어시스턴트의 도구 호출 인자(toolCall arguments)에 이미 등장한 URL. 사용자가 직접 제공했거나 도구가 실제로 읽은 URL은 신뢰하고 통과시킵니다.
+   - `bypassDomains` 설정과 일치하는 호스트 또는 경로 접두사(예: `"*.mycompany.com"`, `"github.com/private-repo"`).
    - 코드 블록 및 인라인 코드 안의 URL(`skipCodeBlocks: true`일 때).
 3. **HTTP 확인** (`HEAD` 요청 후 필요 시 본문을 읽지 않고 즉시 취소하는 `GET` 폴백):
    - `2xx` / `3xx → 2xx` → `OK` (통과)
@@ -84,7 +83,7 @@ pi -e ./
 | `maxRewrites` | `1` | 사용자 프롬프트당 최대 재작성 요청 횟수입니다. 초과 시 `"warn"`으로 강등됩니다. |
 | `maxUrls` | `20` | 답변 하나에서 검사할 최대 URL 개수입니다. |
 | `skipCodeBlocks` | `true` | 펜스 코드 블록 및 인라인 코드 내부의 URL을 무시합니다. |
-| `bypassDomains` | `[]` | 검사를 건너뛸 도메인 목록입니다(`"foo.com"`은 루트 도메인과 서브도메인 모두 매칭, `"*.foo.com"`은 서브도메인만 매칭). |
+| `bypassDomains` | `[]` | 검사를 건너뛸 도메인 또는 경로 접두사 목록입니다(`"foo.com"`은 루트 도메인과 서브도메인 모두 매칭, `"*.foo.com"`은 서브도메인만 매칭, `"github.com/org/repo"`는 해당 경로 하위만 매칭). |
 | `verifier.provider` / `verifier.model` | `null` | `UNCERTAIN` URL 판정에 사용할 모델입니다. `null`이면 현재 세션 모델(`ctx.model`)을 사용합니다. 지정한 모델을 찾을 수 없거나 인증 정보가 없으면 경고를 띄우고 `ctx.model`로 대체합니다. |
 | `verifier.thinking` | `"low"` | `"off"` \| `"minimal"` \| `"low"` \| `"medium"` \| `"high"` \| `"xhigh"` \| `"max"`. `"off"`이거나 모델이 추론(reasoning)을 지원하지 않으면 생략됩니다. |
 | `verifier.systemPrompt` | `null` | 설정 시 내장된 검증용 시스템 프롬프트 전체를 교체합니다. |
