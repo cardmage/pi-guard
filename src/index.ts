@@ -10,11 +10,13 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { matchesKey } from "@earendil-works/pi-tui";
 import { defaultConfig, getConfigPath, loadConfig } from "./config.ts";
+import { evaluateWithDecider, resolveDeciderModel } from "./decider.ts";
 import { closeDispatcher, createDispatcher, type DispatcherBuild } from "./dispatcher.ts";
 import {
 	assistantText,
 	CUSTOM_TYPE,
 	type ExtractedUrl,
+	extractTurnContext,
 	extractUrls,
 	type LooseMessage,
 	lastAssistantIndex,
@@ -22,7 +24,7 @@ import {
 } from "./extractor.ts";
 import { skipReason } from "./filter.ts";
 import { checkUrls } from "./http-check.ts";
-import type { HttpCheckResult, PiGuardConfig, UrlFinding } from "./types.ts";
+import type { DeciderFinding, HttpCheckResult, PiGuardConfig, UrlFinding } from "./types.ts";
 import { resolveVerifierModel, type VerifyItem, verifyWithLlm } from "./verifier.ts";
 
 export const STATUS_KEY = "pi-guard";
@@ -35,6 +37,7 @@ interface GuardState {
 	/** Session cache of decisive findings, by canonical URL key. */
 	cache: Map<string, UrlFinding>;
 	rewriteCount: number;
+	deciderRewriteCount: number;
 	networkWarned: boolean;
 	warned: Set<string>;
 }
@@ -81,6 +84,24 @@ export function buildWarning(failed: readonly UrlFinding[]): string {
 	return [`pi-guard: ${failed.length} URL(s) in the answer failed verification:`, ...lines].join("\n");
 }
 
+/** Feedback sent to the agent when the decider model flags the answer as wrong. */
+export function buildDeciderRewriteMessage(finding: DeciderFinding): string {
+	const pct = Math.round(finding.probability * 100);
+	const thr = Math.round(finding.threshold * 100);
+	return [
+		`[pi-guard] Your last answer was flagged as likely incorrect by the answer verifier (${finding.provider}/${finding.model}: ${pct}% >= ${thr}% threshold).`,
+		"",
+		"Review your answer against the user prompt and the tool outputs from this turn. Fix any factual errors, logical contradictions, or claims not supported by the evidence. Do not mention this check.",
+	].join("\n");
+}
+
+/** Warning shown to the user when the decider model flags the answer as wrong. */
+export function buildDeciderWarning(finding: DeciderFinding): string {
+	const pct = Math.round(finding.probability * 100);
+	const thr = Math.round(finding.threshold * 100);
+	return `pi-guard: answer flagged as potentially incorrect (${pct}% >= ${thr}%, model: ${finding.provider}/${finding.model})`;
+}
+
 export default function piGuard(pi: ExtensionAPI): void {
 	const state: GuardState = {
 		config: defaultConfig(),
@@ -88,6 +109,7 @@ export default function piGuard(pi: ExtensionAPI): void {
 		httpCache: new Map(),
 		cache: new Map(),
 		rewriteCount: 0,
+		deciderRewriteCount: 0,
 		networkWarned: false,
 		warned: new Set(),
 	};
@@ -104,6 +126,7 @@ export default function piGuard(pi: ExtensionAPI): void {
 		state.httpCache.clear();
 		state.cache.clear();
 		state.rewriteCount = 0;
+		state.deciderRewriteCount = 0;
 		state.networkWarned = false;
 		state.warned.clear();
 
@@ -131,7 +154,10 @@ export default function piGuard(pi: ExtensionAPI): void {
 
 	pi.on("before_agent_start", (event) => {
 		// A new user prompt starts a new rewrite budget. Rewrite continuations never pass here.
-		if (event.messageType === "user") state.rewriteCount = 0;
+		if (event.messageType === "user") {
+			state.rewriteCount = 0;
+			state.deciderRewriteCount = 0;
+		}
 	});
 
 	async function evaluate(
@@ -239,7 +265,8 @@ export default function piGuard(pi: ExtensionAPI): void {
 				...(http.pageContent ? { pageContent: http.pageContent } : {}),
 				context: snippetAround(answer, p.index, p.length),
 			}));
-			setStatus(ctx, `pi-guard: asking verifier about ${items.length} URL(s)…`);
+			const statusSuffix = cfg.decider.enabled ? " & answer…" : "…";
+			setStatus(ctx, `pi-guard: asking verifier about ${items.length} URL(s)${statusSuffix}`);
 			const outcome = await verifyWithLlm(items, {
 				model: resolved.model,
 				registry: ctx.modelRegistry,
@@ -267,9 +294,34 @@ export default function piGuard(pi: ExtensionAPI): void {
 		return candidates.map((c) => findings.get(c.key)).filter((f): f is UrlFinding => !!f);
 	}
 
+	async function evaluateAnswer(
+		messages: readonly LooseMessage[],
+		assistantIdx: number,
+		ctx: ExtensionContext,
+		signal: AbortSignal,
+	): Promise<DeciderFinding | undefined> {
+		const decCfg = state.config.decider;
+		const resolved = resolveDeciderModel(decCfg, ctx.modelRegistry);
+		if (resolved.warning) warnOnce(ctx, `pi-guard: ${resolved.warning}`);
+		if (!resolved.model) return undefined;
+
+		const turn = extractTurnContext(messages, assistantIdx);
+		const outcome = await evaluateWithDecider(turn, {
+			model: resolved.model,
+			registry: ctx.modelRegistry,
+			config: decCfg,
+			signal,
+		});
+		if (signal.aborted) return undefined;
+		if (outcome.error && !/aborted/.test(outcome.error)) {
+			warnOnce(ctx, `pi-guard: ${outcome.error} (answer passed unchecked)`);
+		}
+		return outcome.finding;
+	}
+
 	pi.on("agent_before_settle", async (event, ctx) => {
 		const cfg = state.config;
-		if (!cfg.enabled || event.outcome !== "completed") return undefined;
+		if ((!cfg.enabled && !cfg.decider.enabled) || event.outcome !== "completed") return undefined;
 
 		const messages = event.context.contextMessages as unknown as LooseMessage[];
 		const idx = lastAssistantIndex(messages);
@@ -277,13 +329,13 @@ export default function piGuard(pi: ExtensionAPI): void {
 		const answer = assistantText(messages[idx]);
 		if (!answer.trim()) return undefined;
 
-		const extracted = extractUrls(answer, { skipCodeBlocks: cfg.skipCodeBlocks });
-		if (extracted.length === 0) return undefined;
-
-		const candidates = extracted
-			.filter((u) => skipReason(u.url, cfg.bypassDomains) === undefined)
-			.slice(0, cfg.maxUrls);
-		if (candidates.length === 0) return undefined;
+		const candidates = cfg.enabled
+			? extractUrls(answer, { skipCodeBlocks: cfg.skipCodeBlocks })
+					.filter((u) => skipReason(u.url, cfg.bypassDomains) === undefined)
+					.slice(0, cfg.maxUrls)
+			: [];
+		const runDecider = cfg.decider.enabled;
+		if (candidates.length === 0 && !runDecider) return undefined;
 
 		// Abort handling: the run's signal (if any) and Esc in the TUI. The agent run has
 		// already finished here, so ctx.signal is usually undefined.
@@ -303,15 +355,41 @@ export default function piGuard(pi: ExtensionAPI): void {
 			}
 		}
 
-		setStatus(ctx, `pi-guard: checking ${candidates.length} URL(s)…`);
-		try {
-			const findings = await evaluate(candidates, answer, ctx, controller.signal);
-			if (controller.signal.aborted) return undefined;
-			const failed = findings.filter((f) => f.failed);
-			if (failed.length === 0) return undefined;
+		if (candidates.length > 0 && runDecider) {
+			setStatus(ctx, `pi-guard: checking ${candidates.length} URL(s) & answer…`);
+		} else if (candidates.length > 0) {
+			setStatus(ctx, `pi-guard: checking ${candidates.length} URL(s)…`);
+		} else {
+			setStatus(ctx, "pi-guard: checking answer with decider…");
+		}
 
-			if (cfg.mode === "rewrite" && state.rewriteCount < cfg.maxRewrites) {
-				state.rewriteCount++;
+		try {
+			const [findings, deciderFinding] = await Promise.all([
+				candidates.length > 0 ? evaluate(candidates, answer, ctx, controller.signal) : Promise.resolve([]),
+				runDecider ? evaluateAnswer(messages, idx, ctx, controller.signal) : Promise.resolve(undefined),
+			]);
+			if (controller.signal.aborted) return undefined;
+
+			const failedUrls = findings.filter((f) => f.failed);
+			const failedDecider = deciderFinding?.failed ? deciderFinding : undefined;
+			if (failedUrls.length === 0 && !failedDecider) return undefined;
+
+			const urlRewrite = failedUrls.length > 0 && cfg.mode === "rewrite" && state.rewriteCount < cfg.maxRewrites;
+			const urlWarn = failedUrls.length > 0 && !urlRewrite;
+			const deciderRewrite =
+				!!failedDecider && cfg.decider.mode === "rewrite" && state.deciderRewriteCount < cfg.decider.maxRewrites;
+			const deciderWarn = !!failedDecider && !deciderRewrite;
+
+			if (urlWarn) notify(ctx, buildWarning(failedUrls), "warning");
+			if (deciderWarn && failedDecider) notify(ctx, buildDeciderWarning(failedDecider), "warning");
+
+			if (urlRewrite || deciderRewrite) {
+				if (urlRewrite) state.rewriteCount++;
+				if (deciderRewrite) state.deciderRewriteCount++;
+				const rewriteParts: string[] = [];
+				if (urlRewrite) rewriteParts.push(buildRewriteMessage(failedUrls));
+				if (deciderRewrite && failedDecider) rewriteParts.push(buildDeciderRewriteMessage(failedDecider));
+
 				return {
 					entries: [
 						...event.entries,
@@ -319,19 +397,30 @@ export default function piGuard(pi: ExtensionAPI): void {
 							type: "custom_message" as const,
 							customType: CUSTOM_TYPE,
 							display: true,
-							content: buildRewriteMessage(failed),
-							details: { failed, attempt: state.rewriteCount },
+							content: rewriteParts.join("\n\n"),
+							details: {
+								...(urlRewrite ? { failed: failedUrls, attempt: state.rewriteCount } : {}),
+								...(deciderRewrite && failedDecider
+									? { decider: failedDecider, deciderAttempt: state.deciderRewriteCount }
+									: {}),
+							},
 						},
 					],
 					continue: true,
 				};
 			}
 
-			notify(ctx, buildWarning(failed), "warning");
 			return {
 				entries: [
 					...event.entries,
-					{ type: "custom" as const, customType: CUSTOM_TYPE, data: { failed, rewrites: state.rewriteCount } },
+					{
+						type: "custom" as const,
+						customType: CUSTOM_TYPE,
+						data: {
+							...(failedUrls.length > 0 ? { failed: failedUrls, rewrites: state.rewriteCount } : {}),
+							...(failedDecider ? { decider: failedDecider, deciderRewrites: state.deciderRewriteCount } : {}),
+						},
+					},
 				],
 			};
 		} finally {

@@ -3,6 +3,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
+	type DeciderConfig,
 	type HttpConfig,
 	MODES,
 	type PiGuardConfig,
@@ -36,6 +37,16 @@ export function defaultConfig(): PiGuardConfig {
 			proxy: "env",
 			noProxy: [],
 			useSystemCa: true,
+		},
+		decider: {
+			enabled: false,
+			mode: "rewrite",
+			maxRewrites: 1,
+			provider: "llama.cpp",
+			model: null,
+			threshold: 0.8,
+			timeoutMs: 15000,
+			instructions: null,
 		},
 	};
 }
@@ -78,6 +89,14 @@ class Validator {
 		const v = src[key];
 		if (typeof v === "number" && Number.isInteger(v) && v >= min && v <= max) return v;
 		this.warn(path, `integer in [${min}, ${max}]`, v);
+		return fallback;
+	}
+
+	probability(src: Obj, key: string, path: string, fallback: number): number {
+		if (!(key in src) || src[key] === undefined) return fallback;
+		const v = src[key];
+		if (typeof v === "number" && Number.isFinite(v) && v > 0 && v <= 1) return v;
+		this.warn(path, "number in (0, 1]", v);
 		return fallback;
 	}
 
@@ -136,6 +155,7 @@ export function validateConfig(raw: unknown): { config: PiGuardConfig; warnings:
 
 	const v = val.section(raw, "verifier");
 	const h = val.section(raw, "http");
+	const dec = val.section(raw, "decider");
 
 	const verifier: VerifierConfig = {
 		provider: val.nullableString(v, "provider", "verifier.provider", d.verifier.provider),
@@ -155,6 +175,17 @@ export function validateConfig(raw: unknown): { config: PiGuardConfig; warnings:
 		useSystemCa: val.bool(h, "useSystemCa", "http.useSystemCa", d.http.useSystemCa),
 	};
 
+	const decider: DeciderConfig = {
+		enabled: val.bool(dec, "enabled", "decider.enabled", d.decider.enabled),
+		mode: val.enumOf(dec, "mode", "decider.mode", MODES, d.decider.mode),
+		maxRewrites: val.int(dec, "maxRewrites", "decider.maxRewrites", d.decider.maxRewrites, 0, 10),
+		provider: val.string(dec, "provider", "decider.provider", d.decider.provider),
+		model: val.nullableString(dec, "model", "decider.model", d.decider.model),
+		threshold: val.probability(dec, "threshold", "decider.threshold", d.decider.threshold),
+		timeoutMs: val.int(dec, "timeoutMs", "decider.timeoutMs", d.decider.timeoutMs, 500, 600_000),
+		instructions: val.nullableString(dec, "instructions", "decider.instructions", d.decider.instructions),
+	};
+
 	const config: PiGuardConfig = {
 		enabled: val.bool(raw, "enabled", "enabled", d.enabled),
 		mode: val.enumOf(raw, "mode", "mode", MODES, d.mode),
@@ -165,6 +196,7 @@ export function validateConfig(raw: unknown): { config: PiGuardConfig; warnings:
 		bypassDomains: val.stringArray(raw, "bypassDomains", "bypassDomains", d.bypassDomains),
 		verifier,
 		http,
+		decider,
 	};
 	return { config, warnings: val.warnings };
 }

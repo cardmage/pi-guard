@@ -293,3 +293,78 @@ export function assistantText(msg: LooseMessage | undefined): string {
 	if (!msg || msg.role !== "assistant") return "";
 	return textOfContent(msg.content);
 }
+
+export interface TurnToolResult {
+	toolName: string;
+	isError?: boolean;
+	content: string;
+}
+
+export interface TurnContext {
+	userPrompt: string;
+	toolResults: TurnToolResult[];
+	assistantAnswer: string;
+}
+
+const MAX_USER_PROMPT_CHARS = 4_000;
+const MAX_TOOL_RESULT_CHARS = 1_500;
+const MAX_TOTAL_TOOL_CHARS = 8_000;
+const MAX_ASSISTANT_ANSWER_CHARS = 8_000;
+
+function truncateText(text: string, maxChars: number): string {
+	const trimmed = text.trim();
+	if (trimmed.length <= maxChars) return trimmed;
+	return `${trimmed.slice(0, maxChars)}…`;
+}
+
+function isGuardFeedbackMessage(msg: LooseMessage): boolean {
+	if (msg.customType === CUSTOM_TYPE) return true;
+	const text = textOfContent(msg.content).trimStart();
+	return text.startsWith("[pi-guard]");
+}
+
+/**
+ * Extracts the current turn's context leading up to `assistantIdx`:
+ * the last real user message before `assistantIdx` (skipping pi-guard rewrite feedback),
+ * any tool results between that user message and `assistantIdx`, and the assistant's final answer text.
+ */
+export function extractTurnContext(messages: readonly LooseMessage[], assistantIdx: number): TurnContext {
+	const answer = truncateText(assistantText(messages[assistantIdx]), MAX_ASSISTANT_ANSWER_CHARS);
+	let userIdx = -1;
+	for (let i = assistantIdx - 1; i >= 0; i--) {
+		const msg = messages[i];
+		if (msg?.role === "user" && !isGuardFeedbackMessage(msg)) {
+			userIdx = i;
+			break;
+		}
+	}
+
+	const userPrompt = userIdx >= 0 ? truncateText(textOfContent(messages[userIdx]?.content), MAX_USER_PROMPT_CHARS) : "";
+	const toolResults: TurnToolResult[] = [];
+	const startIdx = userIdx >= 0 ? userIdx + 1 : 0;
+	let totalToolChars = 0;
+
+	for (let i = startIdx; i < assistantIdx; i++) {
+		const msg = messages[i];
+		if (!msg || msg.role !== "toolResult") continue;
+		const remaining = MAX_TOTAL_TOOL_CHARS - totalToolChars;
+		if (remaining <= 0) break;
+		const rawContent = textOfContent(msg.content);
+		const content = truncateText(rawContent, Math.min(MAX_TOOL_RESULT_CHARS, remaining));
+		if (!content) continue;
+		totalToolChars += content.length;
+		const toolName = typeof msg.toolName === "string" && msg.toolName.trim() ? msg.toolName.trim() : "tool";
+		const isError = typeof msg.isError === "boolean" ? msg.isError : undefined;
+		toolResults.push({
+			toolName,
+			...(isError !== undefined ? { isError } : {}),
+			content,
+		});
+	}
+
+	return {
+		userPrompt,
+		toolResults,
+		assistantAnswer: answer,
+	};
+}

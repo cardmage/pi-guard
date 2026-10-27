@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	assistantText,
 	canonicalKey,
+	extractTurnContext,
 	extractUrls,
 	lastAssistantIndex,
 	maskCode,
@@ -137,5 +138,45 @@ describe("context message helpers", () => {
 		expect(idx).toBe(messages.length - 1);
 		expect(assistantText(messages[idx])).toBe("Final https://final.com/h");
 		expect(lastAssistantIndex([{ role: "user", content: "x" }])).toBe(-1);
+	});
+
+	it("extracts turn context from the last user prompt, tool results, and final assistant message", () => {
+		const idx = lastAssistantIndex(messages);
+		const turn = extractTurnContext(messages, idx);
+		expect(turn.userPrompt).toBe("Check https://user-given.com/page please");
+		expect(turn.toolResults).toEqual([
+			{
+				toolName: "fetch",
+				isError: false,
+				content: "Found https://tool-result.com/c",
+			},
+		]);
+		expect(turn.assistantAnswer).toBe("Final https://final.com/h");
+	});
+
+	it("skips pi-guard rewrite feedback messages when finding the original user prompt and tool results", () => {
+		const rewriteTurn = [
+			...messages,
+			{
+				role: "user",
+				customType: "pi-guard",
+				content: "[pi-guard] Your last answer was flagged as likely incorrect...",
+			},
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "Corrected answer based on tool output." }],
+			},
+		];
+		const idx = lastAssistantIndex(rewriteTurn);
+		const turn = extractTurnContext(rewriteTurn, idx);
+		expect(turn.userPrompt).toBe("Check https://user-given.com/page please");
+		expect(turn.toolResults).toEqual([
+			{
+				toolName: "fetch",
+				isError: false,
+				content: "Found https://tool-result.com/c",
+			},
+		]);
+		expect(turn.assistantAnswer).toBe("Corrected answer based on tool output.");
 	});
 });

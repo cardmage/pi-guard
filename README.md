@@ -41,6 +41,7 @@ On `agent_before_settle` (when a run finishes with `outcome === "completed"`):
    - `404`, `410`, DNS `ENOTFOUND` → `NOT_FOUND` (fail)
    - `401`, `403`, `429`, `5xx`, timeouts, TLS/proxy/network errors → `UNCERTAIN`
 4. **LLM verification**: `UNCERTAIN` URLs (existence check: `EXISTS` | `NOT_EXISTS` | `UNKNOWN`) and `OK` URLs with extracted page text when `verifyContent: true` (content grounding check: `SUPPORTED` | `CONTRADICTED` | `NOT_EXISTS` for soft-404s | `UNKNOWN`) are judged in a single batch call. `UNKNOWN` and any model/auth/parse error fail open so the session never gets stuck.
+5. **Answer Decider (optional, independent of URLs)**: When `decider.enabled` is `true`, the extension also evaluates the assistant's overall final answer (along with the current turn's `userPrompt` and `toolResults`) using a classifier/decision model via `ctx.modelRegistry.classify()` (defaults to Pi's built-in `llama.cpp` provider). If the probability that the answer is wrong meets or exceeds `decider.threshold`, it triggers `decider.mode` (`"rewrite"` or `"warn"`).
 
 ## Configuration
 
@@ -73,15 +74,25 @@ Create `~/.pi/agent/pi-guard.json` (or `%USERPROFILE%\.pi\agent\pi-guard.json` o
     "proxy": "env",
     "noProxy": [],
     "useSystemCa": true
+  },
+  "decider": {
+    "enabled": false,
+    "mode": "rewrite",
+    "maxRewrites": 1,
+    "provider": "llama.cpp",
+    "model": null,
+    "threshold": 0.8,
+    "timeoutMs": 15000,
+    "instructions": null
   }
 }
 ```
 
 | Key | Default | Description |
 |---|---|---|
-| `enabled` | `true` | Enable or disable the extension. |
-| `mode` | `"rewrite"` | `"rewrite"` asks the agent to fix the answer; `"warn"` only notifies. |
-| `maxRewrites` | `1` | Max rewrite requests per user prompt before degrading to `"warn"`. |
+| `enabled` | `true` | Enable or disable URL verification. |
+| `mode` | `"rewrite"` | `"rewrite"` asks the agent to fix failed URLs; `"warn"` only notifies. |
+| `maxRewrites` | `1` | Max URL-verification rewrite requests per user prompt before degrading to `"warn"`. |
 | `maxUrls` | `20` | Max URLs checked per answer. |
 | `skipCodeBlocks` | `true` | Ignore URLs inside fenced and inline code. |
 | `verifyContent` | `true` | Fetch readable text from HTTP 200 pages and ask the verifier LLM whether the page supports the assistant's claim around the URL (and is not a soft-404). |
@@ -97,6 +108,14 @@ Create `~/.pi/agent/pi-guard.json` (or `%USERPROFILE%\.pi\agent\pi-guard.json` o
 | `http.proxy` | `"env"` | `"env"` (use `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`), `"none"` (always direct), or an explicit proxy URL (`http://`, `https://`, `socks5://`). |
 | `http.noProxy` | `[]` | Hosts that bypass an explicit `http.proxy` URL (e.g. `[".corp.com", "10.0.0.1:8080"]`). In `"env"` mode, use `NO_PROXY`. |
 | `http.useSystemCa` | `true` | Trust the OS certificate store in addition to Node's bundled CAs (for corporate TLS-inspecting proxies). |
+| `decider.enabled` | `false` | Enable whole-answer verification using a classifier/decision model (runs even when the answer contains no URLs). |
+| `decider.mode` | `"rewrite"` | `"rewrite"` asks the agent to revise the answer when flagged; `"warn"` only shows a warning notification. |
+| `decider.maxRewrites` | `1` | Max answer-decider rewrite requests per user prompt before degrading to `"warn"`. |
+| `decider.provider` | `"llama.cpp"` | Classifier model provider ID (uses Pi's built-in `llama.cpp` provider by default). |
+| `decider.model` | `null` | Classifier model ID (e.g. `"pplx-decider-v1.1-27b"`). When `null`, auto-selects if the provider has a single classifier model loaded. |
+| `decider.threshold` | `0.8` | Probability threshold in `(0, 1]` at or above which the answer is considered wrong (`probability >= threshold`). |
+| `decider.timeoutMs` | `15000` | Timeout for the classifier call in milliseconds. |
+| `decider.instructions` | `null` | Custom instructions for the boolean `wrong` question (`null` uses built-in instructions). |
 
 ## Corporate proxies & TLS inspection
 

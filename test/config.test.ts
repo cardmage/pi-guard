@@ -15,6 +15,16 @@ describe("validateConfig", () => {
 			mode: "warn",
 			verifier: { model: "gpt-x" },
 			http: { proxy: "http://proxy:8080", noProxy: [".corp.com", " "] },
+			decider: {
+				enabled: true,
+				mode: "warn",
+				maxRewrites: 2,
+				provider: "llama.cpp",
+				model: "pplx-decider-v1.1-27b",
+				threshold: 0.85,
+				timeoutMs: 20000,
+				instructions: "Custom check",
+			},
 		});
 		expect(warnings).toEqual([]);
 		expect(config.mode).toBe("warn");
@@ -23,6 +33,16 @@ describe("validateConfig", () => {
 		expect(config.http.proxy).toBe("http://proxy:8080");
 		expect(config.http.noProxy).toEqual([".corp.com"]);
 		expect(config.http.timeoutMs).toBe(8000);
+		expect(config.decider).toEqual({
+			enabled: true,
+			mode: "warn",
+			maxRewrites: 2,
+			provider: "llama.cpp",
+			model: "pplx-decider-v1.1-27b",
+			threshold: 0.85,
+			timeoutMs: 20000,
+			instructions: "Custom check",
+		});
 	});
 
 	it("falls back to defaults for invalid enums and types, with warnings", () => {
@@ -34,6 +54,12 @@ describe("validateConfig", () => {
 			bypassDomains: [1, 2],
 			verifier: { thinking: "ultra", timeoutMs: 1.5 },
 			http: "fast",
+			decider: {
+				enabled: "true",
+				mode: "invalid",
+				threshold: 0,
+				maxRewrites: 99,
+			},
 		});
 		const d = defaultConfig();
 		expect(config.mode).toBe(d.mode);
@@ -44,9 +70,11 @@ describe("validateConfig", () => {
 		expect(config.verifier.thinking).toBe("low");
 		expect(config.verifier.timeoutMs).toBe(30000);
 		expect(config.http).toEqual(d.http);
-		expect(warnings.length).toBe(8);
+		expect(config.decider).toEqual(d.decider);
+		expect(warnings.length).toBe(12);
 		expect(warnings.join("\n")).toContain('"mode"');
 		expect(warnings.join("\n")).toContain('"verifier.thinking"');
+		expect(warnings.join("\n")).toContain('"decider.threshold"');
 	});
 
 	it("accepts null and empty strings for nullable fields", () => {

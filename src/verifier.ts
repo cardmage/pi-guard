@@ -187,6 +187,7 @@ export async function verifyWithLlm(items: readonly VerifyItem[], opts: VerifyOp
 	const useReasoning = opts.config.thinking !== "off" && opts.model.reasoning;
 	const maxTokens = Math.min(opts.model.maxTokens > 0 ? opts.model.maxTokens : 4096, 512 + items.length * 200);
 
+	let onAbort: (() => void) | undefined;
 	try {
 		const stream = opts.registry.streamSimple(
 			opts.model,
@@ -201,8 +202,12 @@ export async function verifyWithLlm(items: readonly VerifyItem[], opts: VerifyOp
 		const resultPromise = stream.result();
 		// stream.result() may not observe the abort signal promptly on every provider.
 		const aborted = new Promise<never>((_, reject) => {
-			if (signal.aborted) reject(signal.reason);
-			signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+			if (signal.aborted) {
+				reject(signal.reason);
+				return;
+			}
+			onAbort = () => reject(signal.reason);
+			signal.addEventListener("abort", onAbort, { once: true });
 		});
 		aborted.catch(() => {});
 		const msg = await Promise.race([resultPromise, aborted]);
@@ -214,5 +219,7 @@ export async function verifyWithLlm(items: readonly VerifyItem[], opts: VerifyOp
 		if (timeout.aborted) return fail("verifier timeout");
 		if (opts.signal?.aborted) return fail("verifier aborted");
 		return fail(`verifier error: ${err instanceof Error ? err.message : String(err)}`);
+	} finally {
+		if (onAbort) signal.removeEventListener("abort", onAbort);
 	}
 }
