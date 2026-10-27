@@ -137,14 +137,19 @@ export async function evaluateWithDecider(
 	const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
 	const context = buildDeciderContext(turn, opts.config);
 
+	let onAbort: (() => void) | undefined;
 	try {
 		const classifyPromise = opts.registry.classify(opts.model, context, {
 			signal,
 			timeoutMs: opts.config.timeoutMs,
 		});
 		const aborted = new Promise<never>((_, reject) => {
-			if (signal.aborted) reject(signal.reason);
-			signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+			if (signal.aborted) {
+				reject(signal.reason);
+				return;
+			}
+			onAbort = () => reject(signal.reason);
+			signal.addEventListener("abort", onAbort, { once: true });
 		});
 		aborted.catch(() => {});
 		const result: ClassifierResult = await Promise.race([classifyPromise, aborted]);
@@ -184,5 +189,7 @@ export async function evaluateWithDecider(
 		if (timeout.aborted) return { error: "decider timeout" };
 		if (opts.signal?.aborted) return { error: "decider aborted" };
 		return { error: `decider error: ${err instanceof Error ? err.message : String(err)}` };
+	} finally {
+		if (onAbort) signal.removeEventListener("abort", onAbort);
 	}
 }

@@ -317,16 +317,23 @@ function truncateText(text: string, maxChars: number): string {
 	return `${trimmed.slice(0, maxChars)}…`;
 }
 
+function isGuardFeedbackMessage(msg: LooseMessage): boolean {
+	if (msg.customType === CUSTOM_TYPE) return true;
+	const text = textOfContent(msg.content).trimStart();
+	return text.startsWith("[pi-guard]");
+}
+
 /**
  * Extracts the current turn's context leading up to `assistantIdx`:
- * the last user message before `assistantIdx`, any tool results between that user message
- * and `assistantIdx`, and the assistant's final answer text.
+ * the last real user message before `assistantIdx` (skipping pi-guard rewrite feedback),
+ * any tool results between that user message and `assistantIdx`, and the assistant's final answer text.
  */
 export function extractTurnContext(messages: readonly LooseMessage[], assistantIdx: number): TurnContext {
 	const answer = truncateText(assistantText(messages[assistantIdx]), MAX_ASSISTANT_ANSWER_CHARS);
 	let userIdx = -1;
 	for (let i = assistantIdx - 1; i >= 0; i--) {
-		if (messages[i]?.role === "user") {
+		const msg = messages[i];
+		if (msg?.role === "user" && !isGuardFeedbackMessage(msg)) {
 			userIdx = i;
 			break;
 		}

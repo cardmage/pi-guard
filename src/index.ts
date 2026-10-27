@@ -265,7 +265,8 @@ export default function piGuard(pi: ExtensionAPI): void {
 				...(http.pageContent ? { pageContent: http.pageContent } : {}),
 				context: snippetAround(answer, p.index, p.length),
 			}));
-			setStatus(ctx, `pi-guard: asking verifier about ${items.length} URL(s)…`);
+			const statusSuffix = cfg.decider.enabled ? " & answer…" : "…";
+			setStatus(ctx, `pi-guard: asking verifier about ${items.length} URL(s)${statusSuffix}`);
 			const outcome = await verifyWithLlm(items, {
 				model: resolved.model,
 				registry: ctx.modelRegistry,
