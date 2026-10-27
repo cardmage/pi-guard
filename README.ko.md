@@ -41,6 +41,7 @@ pi -e ./
    - `404`, `410`, DNS `ENOTFOUND` → `NOT_FOUND` (실패)
    - `401`, `403`, `429`, `5xx`, 타임아웃, TLS/프록시/네트워크 오류 → `UNCERTAIN` (보류)
 4. **LLM 판정**: `UNCERTAIN` URL(실존 판정: `EXISTS` | `NOT_EXISTS` | `UNKNOWN`)과 `verifyContent: true`일 때 본문이 추출된 `OK` URL(인용 내용 검증: `SUPPORTED` | `CONTRADICTED` | `NOT_EXISTS`(soft-404) | `UNKNOWN`)을 한 번의 호출로 일괄 판정합니다. `UNKNOWN`이거나 모델/인증/파싱 오류가 발생하면 세션이 멈추지 않도록 통과(fail-open) 처리합니다.
+5. **Answer Decider (선택 기능, URL 검사와 독립 동작)**: `decider.enabled`가 `true`이면 답변 내 URL 유무와 상관없이 현재 턴의 `{ userPrompt, toolResults, assistantAnswer }`를 Classifier/Decision 모델(`ctx.modelRegistry.classify()`, 기본 프로바이더 `"llama.cpp"`)에 전달하여 직전 답변이 틀렸을 확률만 판별합니다. 확률이 `decider.threshold` 이상이면 `decider.mode`(`"rewrite"` 또는 `"warn"`)에 따라 재작성을 요청하거나 경고를 표시합니다.
 
 ## 설정
 
@@ -73,15 +74,25 @@ pi -e ./
     "proxy": "env",
     "noProxy": [],
     "useSystemCa": true
+  },
+  "decider": {
+    "enabled": false,
+    "mode": "rewrite",
+    "maxRewrites": 1,
+    "provider": "llama.cpp",
+    "model": null,
+    "threshold": 0.8,
+    "timeoutMs": 15000,
+    "instructions": null
   }
 }
 ```
 
 | 키 | 기본값 | 설명 |
 |---|---|---|
-| `enabled` | `true` | 확장 기능을 활성화하거나 비활성화합니다. |
-| `mode` | `"rewrite"` | `"rewrite"`는 에이전트에게 답변 재작성을 요청하고, `"warn"`은 경고 알림만 표시합니다. |
-| `maxRewrites` | `1` | 사용자 프롬프트당 최대 재작성 요청 횟수입니다. 초과 시 `"warn"`으로 강등됩니다. |
+| `enabled` | `true` | URL 검증 기능을 활성화하거나 비활성화합니다. |
+| `mode` | `"rewrite"` | `"rewrite"`는 에이전트에게 URL 오류 수정을 위한 답변 재작성을 요청하고, `"warn"`은 경고 알림만 표시합니다. |
+| `maxRewrites` | `1` | 사용자 프롬프트당 URL 검증으로 인한 최대 재작성 요청 횟수입니다. 초과 시 `"warn"`으로 강등됩니다. |
 | `maxUrls` | `20` | 답변 하나에서 검사할 최대 URL 개수입니다. |
 | `skipCodeBlocks` | `true` | 펜스 코드 블록 및 인라인 코드 내부의 URL을 무시합니다. |
 | `verifyContent` | `true` | HTTP 200 응답 페이지의 본문 텍스트를 추출해 에이전트가 해당 URL 주변에서 주장한 내용을 실제로 뒷받침하는지(및 soft-404가 아닌지) 검증 LLM으로 대조합니다. |
@@ -97,6 +108,14 @@ pi -e ./
 | `http.proxy` | `"env"` | `"env"` (`HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` 환경변수 사용), `"none"` (항상 직접 연결), 또는 명시적 프록시 URL (`http://`, `https://`, `socks5://`). |
 | `http.noProxy` | `[]` | 명시적 `http.proxy` URL을 우회할 호스트 목록입니다(예: `[".corp.com", "10.0.0.1:8080"]`). `"env"` 모드에서는 `NO_PROXY` 환경변수를 사용하세요. |
 | `http.useSystemCa` | `true` | Node 내장 CA 외에 OS 인증서 저장소의 루트 인증서도 신뢰합니다(사내 TLS 검사 프록시 환경 대응). |
+| `decider.enabled` | `false` | Classifier/Decision 모델을 사용한 직전 응답 전체 검증 기능을 활성화합니다(답변에 URL이 없어도 동작). |
+| `decider.mode` | `"rewrite"` | 틀렸다고 판정됐을 때 에이전트에게 답변 수정을 요청(`"rewrite"`)하거나 경고 알림만 표시(`"warn"`)합니다. |
+| `decider.maxRewrites` | `1` | 사용자 프롬프트당 Decider가 요청할 수 있는 최대 재작성 횟수입니다(초과 시 `"warn"`으로 강등). |
+| `decider.provider` | `"llama.cpp"` | Classifier 모델 프로바이더 ID입니다(기본값은 Pi 내장 `"llama.cpp"`). |
+| `decider.model` | `null` | 사용할 모델 ID(예: `"pplx-decider-v1.1-27b"`). `null`이면 해당 프로바이더에 로드된 단일 Classifier 모델을 자동 선택합니다. |
+| `decider.threshold` | `0.8` | 응답이 틀렸다고 판정할 확률 임계값(`(0, 1]`, `probability >= threshold`일 때 실패)입니다. |
+| `decider.timeoutMs` | `15000` | Classifier 호출 타임아웃(밀리초)입니다. |
+| `decider.instructions` | `null` | `wrong` 질문에 사용할 커스텀 판별 지시문입니다(`null`이면 기본 지시문 사용). |
 
 ## 사내 프록시 및 TLS 검사 환경
 

@@ -17,9 +17,14 @@ import {
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { CONFIG_FILE_NAME } from "../src/config.ts";
 import { CUSTOM_TYPE } from "../src/extractor.ts";
-import piGuard, { buildRewriteMessage, buildWarning } from "../src/index.ts";
-import type { UrlFinding } from "../src/types.ts";
-import { fakeModel, fakeRegistry, type FakeRegistryOptions } from "./helpers/fakes.ts";
+import piGuard, {
+	buildDeciderRewriteMessage,
+	buildDeciderWarning,
+	buildRewriteMessage,
+	buildWarning,
+} from "../src/index.ts";
+import type { DeciderFinding, UrlFinding } from "../src/types.ts";
+import { fakeClassifierModel, fakeModel, fakeRegistry, type FakeRegistryOptions } from "./helpers/fakes.ts";
 import { isolateProxyEnv, type ProxyServer, startProxy, startTargetServer, type TargetServer } from "./helpers/servers.ts";
 
 type Handler<T> = (event: T, ctx: ExtensionContext) => Promise<unknown> | unknown;
@@ -524,6 +529,113 @@ describe("piGuard pipeline", () => {
 			await rm(h.agentDir, { recursive: true, force: true });
 		}
 	});
+
+	it("evaluates answers without URLs when decider.enabled is true and triggers rewrite", async () => {
+		const deciderModel = fakeClassifierModel("llama.cpp", "pplx-decider-v1.1-27b");
+		const h = await createHarness({
+			config: {
+				decider: {
+					enabled: true,
+					mode: "rewrite",
+					maxRewrites: 1,
+					provider: "llama.cpp",
+					model: "pplx-decider-v1.1-27b",
+					threshold: 0.8,
+				},
+			},
+			registryOpts: {
+				classifiers: [deciderModel],
+				classifyProbability: (ctx) => {
+					expect(ctx.state.userPrompt).toBe("Did tests pass?");
+					expect(ctx.state.assistantAnswer).toBe("Yes, all 42 tests passed with 0 errors.");
+					return 0.93;
+				},
+			},
+		});
+		try {
+			await h.sessionStart();
+			await h.beforeAgentStart({
+				type: "before_agent_start",
+				messageType: "user",
+				prompt: "Did tests pass?",
+				systemPrompt: "",
+				systemPromptOptions: {} as never,
+			});
+
+			const priorMessages: AgentMessage[] = [
+				{
+					role: "user",
+					content: [{ type: "text", text: "Did tests pass?" }],
+					timestamp: Date.now(),
+				},
+			];
+			const ev = makeSettleEvent("Yes, all 42 tests passed with 0 errors.", priorMessages);
+			const res = await h.beforeSettle(ev);
+
+			expect(res?.continue).toBe(true);
+			const entry = res?.entries?.[0] as { type: string; content: string };
+			expect(entry.type).toBe("custom_message");
+			expect(entry.content).toContain("llama.cpp/pplx-decider-v1.1-27b: 93% >= 80% threshold");
+
+			// Second attempt hits maxRewrites and demotes to warning
+			const ev2 = makeSettleEvent("Yes, all 42 tests passed with 0 errors.", priorMessages);
+			const res2 = await h.beforeSettle(ev2);
+			expect(res2?.continue).toBeFalsy();
+			expect(
+				h.notified.some((n) => n.type === "warning" && n.message.includes("answer flagged as potentially incorrect (93% >= 80%")),
+			).toBe(true);
+		} finally {
+			await h.sessionShutdown();
+			await rm(h.agentDir, { recursive: true, force: true });
+		}
+	});
+
+	it("supports independent modes for URL guard and decider (e.g. URL rewrite + decider warn)", async () => {
+		const deciderModel = fakeClassifierModel("llama.cpp", "custom-decider");
+		const h = await createHarness({
+			config: {
+				enabled: true,
+				mode: "rewrite",
+				maxRewrites: 1,
+				http: { proxy: hProxy(forwardProxy) },
+				decider: {
+					enabled: true,
+					mode: "warn",
+					provider: "llama.cpp",
+					model: null, // auto-select single classifier on llama.cpp
+					threshold: 0.75,
+				},
+			},
+			registryOpts: {
+				classifiers: [deciderModel],
+				classifyProbability: 0.88,
+			},
+		});
+		try {
+			await h.sessionStart();
+			await h.beforeAgentStart({
+				type: "before_agent_start",
+				messageType: "user",
+				prompt: "q",
+				systemPrompt: "",
+				systemPromptOptions: {} as never,
+			});
+
+			const ev = makeSettleEvent("Broken link: http://docs.foo.com/missing");
+			const res = await h.beforeSettle(ev);
+
+			// URL guard triggers rewrite continuation, while decider in warn mode issues a notification
+			expect(res?.continue).toBe(true);
+			const entry = res?.entries?.[0] as { content: string };
+			expect(entry.content).toContain("http://docs.foo.com/missing");
+			expect(
+				h.notified.some((n) => n.type === "warning" && n.message.includes("answer flagged as potentially incorrect (88% >= 75%")),
+			).toBe(true);
+		} finally {
+			await h.sessionShutdown();
+			await rm(h.agentDir, { recursive: true, force: true });
+		}
+	});
 });
 
 describe("Pi extension loader (jiti & package.json manifest)", () => {
@@ -579,5 +691,18 @@ describe("formatters", () => {
 	it("buildWarning", () => {
 		const failed: UrlFinding[] = [{ url: "https://a.com/x", failed: true, reason: "HTTP 404" }];
 		expect(buildWarning(failed)).toContain("• https://a.com/x (HTTP 404)");
+	});
+
+	it("buildDeciderRewriteMessage and buildDeciderWarning", () => {
+		const finding: DeciderFinding = {
+			provider: "llama.cpp",
+			model: "pplx-decider-v1.1-27b",
+			probability: 0.91,
+			threshold: 0.8,
+			failed: true,
+			reason: "decider (llama.cpp/pplx-decider-v1.1-27b): 91% wrong (threshold 80%)",
+		};
+		expect(buildDeciderRewriteMessage(finding)).toContain("llama.cpp/pplx-decider-v1.1-27b: 91% >= 80% threshold");
+		expect(buildDeciderWarning(finding)).toContain("91% >= 80%, model: llama.cpp/pplx-decider-v1.1-27b");
 	});
 });

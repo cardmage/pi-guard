@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	assistantText,
 	canonicalKey,
+	extractTurnContext,
 	extractUrls,
 	lastAssistantIndex,
 	maskCode,
@@ -137,5 +138,19 @@ describe("context message helpers", () => {
 		expect(idx).toBe(messages.length - 1);
 		expect(assistantText(messages[idx])).toBe("Final https://final.com/h");
 		expect(lastAssistantIndex([{ role: "user", content: "x" }])).toBe(-1);
+	});
+
+	it("extracts turn context from the last user prompt, tool results, and final assistant message", () => {
+		const idx = lastAssistantIndex(messages);
+		const turn = extractTurnContext(messages, idx);
+		expect(turn.userPrompt).toBe("Check https://user-given.com/page please");
+		expect(turn.toolResults).toEqual([
+			{
+				toolName: "fetch",
+				isError: false,
+				content: "Found https://tool-result.com/c",
+			},
+		]);
+		expect(turn.assistantAnswer).toBe("Final https://final.com/h");
 	});
 });

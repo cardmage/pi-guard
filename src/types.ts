@@ -30,6 +30,22 @@ export interface HttpConfig {
 	useSystemCa: boolean;
 }
 
+export interface DeciderConfig {
+	/** Whether to check the assistant's final answer with a classifier/decision model. */
+	enabled: boolean;
+	mode: Mode;
+	maxRewrites: number;
+	/** Classifier model provider (defaults to `"llama.cpp"`). */
+	provider: string;
+	/** Classifier model id (e.g. `"pplx-decider-v1.1-27b"`). `null` = auto-pick when the provider has a single classifier model. */
+	model: string | null;
+	/** Probability threshold in `(0, 1]` at or above which the answer is considered wrong. */
+	threshold: number;
+	timeoutMs: number;
+	/** Custom instructions for the `wrong` bool question. `null` = built-in instructions. */
+	instructions: string | null;
+}
+
 export interface PiGuardConfig {
 	enabled: boolean;
 	mode: Mode;
@@ -41,6 +57,7 @@ export interface PiGuardConfig {
 	bypassDomains: string[];
 	verifier: VerifierConfig;
 	http: HttpConfig;
+	decider: DeciderConfig;
 }
 
 /** Outcome of the HTTP existence check. */
@@ -78,5 +95,18 @@ export interface UrlFinding {
 	/** True when the URL is considered hallucinated or its content contradicts the claim (HTTP NOT_FOUND, LLM NOT_EXISTS, or LLM CONTRADICTED). */
 	failed: boolean;
 	/** Short explanation (HTTP status / error / LLM reason). */
+	reason: string;
+}
+
+/** Verdict from the classifier/decision model for the assistant's overall answer. */
+export interface DeciderFinding {
+	provider: string;
+	model: string;
+	/** Calibrated probability in `[0, 1]` that the assistant's answer is wrong. */
+	probability: number;
+	threshold: number;
+	/** True when `probability >= threshold`. */
+	failed: boolean;
+	/** Human-readable summary of the decision. */
 	reason: string;
 }
