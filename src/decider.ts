@@ -19,9 +19,6 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TurnContext } from "./extractor.ts";
 import type { DeciderConfig, DeciderDimensionScore, DeciderFinding } from "./types.ts";
 
-export const DEFAULT_DECIDER_INSTRUCTIONS =
-	"Judge whether `assistantAnswer` is wrong: does it contradict `toolResults`, fabricate facts or outputs not supported by the turn context, or contain clear factual or logical errors in response to `userPrompt`?";
-
 export const DEFAULT_DECIDER_CRITERIA = {
 	true: "The answer is wrong, hallucinated, or contradicts the tool outputs or user prompt.",
 	false: "The answer is accurate, faithful to the tool outputs, and properly addresses the user prompt.",
@@ -226,6 +223,7 @@ export function resolveDeciderModel(
 export function buildDeciderContext(
 	turn: TurnContext,
 	cfg: Pick<DeciderConfig, "instructions">,
+	specs: readonly DeciderQuestionSpec[] = getDeciderQuestionSpecs(turn, cfg),
 ): ClassifierContext {
 	const state: JsonObject = {
 		userPrompt: turn.userPrompt,
@@ -240,7 +238,6 @@ export function buildDeciderContext(
 			: {}),
 		assistantAnswer: turn.assistantAnswer,
 	};
-	const specs = getDeciderQuestionSpecs(turn, cfg);
 	const questions: Record<string, ClassifierQuestion> = {};
 	for (const spec of specs) {
 		questions[spec.id] = {
@@ -265,12 +262,35 @@ function round4(v: number): number {
 	return Math.round(v * 10000) / 10000;
 }
 
+function groupTriggeredRisk(items: readonly DeciderDimensionScore[]): {
+	risk: number;
+	triggeredWeight: number;
+	triggeredWeightedSum: number;
+} {
+	const triggered = items.filter((i) => i.risk >= 0.5);
+	const active = triggered.length > 0 ? triggered : items;
+	let weightSum = 0;
+	let riskSum = 0;
+	for (const item of active) {
+		weightSum += item.weight;
+		riskSum += item.weight * item.risk;
+	}
+	return {
+		risk: weightSum > 0 ? riskSum / weightSum : 0,
+		triggeredWeight: triggered.length > 0 ? weightSum : 0,
+		triggeredWeightedSum: triggered.length > 0 ? riskSum : 0,
+	};
+}
+
 /**
  * Combines multi-question boolean probabilities into a single calibrated wrongness probability:
  * 1. Normalizes each question into a wrongness `risk` (`p` for negative polarity, `1 - p` for positive polarity).
- * 2. Computes the weighted average risk across all answered questions.
- * 3. Applies a polarity cross-check damping factor when positive and negative question groups disagree
- *    (e.g. Yes-bias where the classifier answers `true` to both flaw and faithfulness questions).
+ * 2. Within each polarity group, evaluates triggered dimensions (`risk >= 0.5`) so a single orthogonal flaw
+ *    (e.g. tool contradiction or math error) is not diluted by unrelated passing dimensions (e.g. `addresses_prompt`).
+ * 3. Cross-checks negative and positive polarity groups:
+ *    - When both groups confirm a flaw (`negRisk >= 0.5` and `posRisk >= 0.5`), aggregates the triggered flaw dimensions.
+ *    - When the groups disagree across `0.5` (e.g. Yes-bias where the classifier answers `true` to both flaw and
+ *      faithfulness questions), dampens the overall weighted average proportional to their disagreement.
  */
 export function aggregateDeciderScores(
 	specs: readonly DeciderQuestionSpec[],
@@ -315,35 +335,42 @@ export function aggregateDeciderScores(
 
 	let totalWeight = 0;
 	let weightedRiskSum = 0;
-	let negWeight = 0;
-	let negRiskSum = 0;
-	let posWeight = 0;
-	let posRiskSum = 0;
+	const negItems: DeciderDimensionScore[] = [];
+	const posItems: DeciderDimensionScore[] = [];
 
 	for (const item of breakdown) {
 		totalWeight += item.weight;
 		weightedRiskSum += item.weight * item.risk;
 		if (item.polarity === "negative") {
-			negWeight += item.weight;
-			negRiskSum += item.weight * item.risk;
+			negItems.push(item);
 		} else {
-			posWeight += item.weight;
-			posRiskSum += item.weight * item.risk;
+			posItems.push(item);
 		}
 	}
 
 	if (totalWeight <= 0) return undefined;
 	let composite = weightedRiskSum / totalWeight;
 
-	// Polarity cross-check: if both negative and positive questions were answered, check whether they agree.
-	if (negWeight > 0 && posWeight > 0) {
-		const negRisk = negRiskSum / negWeight;
-		const posRisk = posRiskSum / posWeight;
-		// When one polarity group indicates "likely fine" (< 0.5) while the other indicates "likely wrong",
-		// dampen the composite score proportional to their disagreement to suppress yes/no bias false positives.
-		if (Math.min(negRisk, posRisk) < 0.5) {
-			const disagreement = Math.abs(negRisk - posRisk);
+	if (negItems.length > 0 && posItems.length > 0) {
+		const neg = groupTriggeredRisk(negItems);
+		const pos = groupTriggeredRisk(posItems);
+		if (neg.risk >= 0.5 && pos.risk >= 0.5) {
+			// Both polarity groups confirm a flaw: aggregate only the triggered flaw dimensions
+			// so unrelated passing orthogonal dimensions do not dilute a real error below threshold.
+			const activeWeight = neg.triggeredWeight + pos.triggeredWeight;
+			if (activeWeight > 0) {
+				composite = (neg.triggeredWeightedSum + pos.triggeredWeightedSum) / activeWeight;
+			}
+		} else if (neg.risk >= 0.5 || pos.risk >= 0.5) {
+			// Polarity disagreement (one group flags a flaw >= 0.5 while the other says < 0.5):
+			// dampen the composite score proportional to their disagreement to suppress yes/no bias false positives.
+			const disagreement = Math.abs(neg.risk - pos.risk);
 			composite *= 1 - 0.5 * disagreement;
+		}
+	} else {
+		const single = groupTriggeredRisk(breakdown);
+		if (single.triggeredWeight > 0) {
+			composite = single.risk;
 		}
 	}
 
@@ -380,7 +407,7 @@ export async function evaluateWithDecider(
 	const timeout = AbortSignal.timeout(opts.config.timeoutMs);
 	const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
 	const specs = getDeciderQuestionSpecs(turn, opts.config);
-	const context = buildDeciderContext(turn, opts.config);
+	const context = buildDeciderContext(turn, opts.config, specs);
 
 	let onAbort: (() => void) | undefined;
 	try {

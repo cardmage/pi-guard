@@ -701,8 +701,14 @@ describe("formatters", () => {
 			threshold: 0.8,
 			failed: true,
 			reason: "decider (llama.cpp/pplx-decider-v1.1-27b): 91% wrong (threshold 80%)",
+			breakdown: [
+				{ id: "contradicts_tools", polarity: "negative", probability: 0.91, risk: 0.91, weight: 0.35 },
+				{ id: "addresses_prompt", polarity: "positive", probability: 0.95, risk: 0.05, weight: 0.15 },
+			],
 		};
 		expect(buildDeciderRewriteMessage(finding)).toContain("llama.cpp/pplx-decider-v1.1-27b: 91% >= 80% threshold");
+		expect(buildDeciderRewriteMessage(finding)).toContain("- contradicts_tools: 91% risk");
 		expect(buildDeciderWarning(finding)).toContain("91% >= 80%, model: llama.cpp/pplx-decider-v1.1-27b");
+		expect(buildDeciderWarning(finding)).toContain("[contradicts_tools=91%]");
 	});
 });

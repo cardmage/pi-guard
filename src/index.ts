@@ -104,7 +104,12 @@ export function buildDeciderRewriteMessage(finding: DeciderFinding): string {
 export function buildDeciderWarning(finding: DeciderFinding): string {
 	const pct = Math.round(finding.probability * 100);
 	const thr = Math.round(finding.threshold * 100);
-	return `pi-guard: answer flagged as potentially incorrect (${pct}% >= ${thr}%, model: ${finding.provider}/${finding.model})`;
+	const topRisks = (finding.breakdown ?? [])
+		.filter((b) => b.risk >= 0.5)
+		.sort((a, b) => b.risk - a.risk)
+		.map((b) => `${b.id}=${Math.round(b.risk * 100)}%`);
+	const detailSuffix = topRisks.length > 0 ? ` [${topRisks.join(", ")}]` : "";
+	return `pi-guard: answer flagged as potentially incorrect (${pct}% >= ${thr}%, model: ${finding.provider}/${finding.model})${detailSuffix}`;
 }
 
 export default function piGuard(pi: ExtensionAPI): void {

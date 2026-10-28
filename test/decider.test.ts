@@ -157,6 +157,35 @@ describe("aggregateDeciderScores (Ideas 1 & 2: orthogonal weights + polarity cro
 		expect(agg).toBeDefined();
 		expect(agg!.probability).toBeLessThan(0.5);
 	});
+
+	it("does not dilute a single orthogonal flaw (tool contradiction) when unrelated dimensions pass", () => {
+		const specs = getDeciderQuestionSpecs(
+			{ toolResults: [{ toolName: "bash", isError: true, content: "1 test failed" }] },
+			{ instructions: null },
+		);
+		const agg = aggregateDeciderScores(specs, {
+			contradicts_tools: { type: "bool", probability: 0.96 }, // neg, w=0.35 -> risk 0.96 (triggered)
+			fabricated_claims: { type: "bool", probability: 0.05 }, // neg, w=0.25 -> risk 0.05 (not triggered)
+			faithful_to_evidence: { type: "bool", probability: 0.04 }, // pos, w=0.25 -> risk 0.96 (triggered)
+			addresses_prompt: { type: "bool", probability: 0.95 }, // pos, w=0.15 -> risk 0.05 (not triggered)
+		});
+		expect(agg).toBeDefined();
+		expect(agg!.probability).toBeCloseTo(0.96, 4);
+		expect(agg!.probability).toBeGreaterThanOrEqual(0.8);
+	});
+
+	it("does not dilute a single orthogonal flaw (factual/math error in no-tool turn) when unrelated dimensions pass", () => {
+		const specs = getDeciderQuestionSpecs({ toolResults: [] }, { instructions: null });
+		const agg = aggregateDeciderScores(specs, {
+			fabricated_claims: { type: "bool", probability: 0.02 }, // neg, w=0.30 -> risk 0.02 (not triggered)
+			logical_or_factual_error: { type: "bool", probability: 0.95 }, // neg, w=0.30 -> risk 0.95 (triggered)
+			accurate_and_sound: { type: "bool", probability: 0.05 }, // pos, w=0.25 -> risk 0.95 (triggered)
+			addresses_prompt: { type: "bool", probability: 0.98 }, // pos, w=0.15 -> risk 0.02 (not triggered)
+		});
+		expect(agg).toBeDefined();
+		expect(agg!.probability).toBeCloseTo(0.95, 4);
+		expect(agg!.probability).toBeGreaterThanOrEqual(0.8);
+	});
 });
 
 describe("evaluateWithDecider", () => {
@@ -210,6 +239,25 @@ describe("evaluateWithDecider", () => {
 		expect(out.error).toBeUndefined();
 		expect(out.finding?.failed).toBe(false);
 		expect(out.finding?.probability).toBeLessThan(0.8);
+	});
+
+	it("flags a single cross-confirmed flaw even when other orthogonal dimensions pass", async () => {
+		const reg = fakeRegistry({
+			models: [],
+			classifiers: [model],
+			classifyAnswers: {
+				contradicts_tools: 0.94,
+				fabricated_claims: 0.08,
+				faithful_to_evidence: 0.06, // positive: 6% faithful -> 94% risk
+				addresses_prompt: 0.95, // positive: 95% addresses prompt -> 5% risk
+			},
+		});
+		const out = await evaluateWithDecider(turn, { model, registry: reg, config: baseCfg });
+		expect(out.error).toBeUndefined();
+		expect(out.finding?.failed).toBe(true);
+		expect(out.finding?.probability).toBe(0.94);
+		expect(out.finding?.reason).toContain("contradicts_tools=94%");
+		expect(out.finding?.reason).toContain("faithful_to_evidence=94%");
 	});
 
 	it("fails open on provider error or thrown error", async () => {
