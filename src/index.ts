@@ -88,8 +88,13 @@ export function buildWarning(failed: readonly UrlFinding[]): string {
 export function buildDeciderRewriteMessage(finding: DeciderFinding): string {
 	const pct = Math.round(finding.probability * 100);
 	const thr = Math.round(finding.threshold * 100);
+	const flaggedDims = (finding.breakdown ?? [])
+		.filter((b) => b.risk >= 0.5)
+		.sort((a, b) => b.risk - a.risk)
+		.map((b) => `- ${b.id}: ${Math.round(b.risk * 100)}% risk`);
 	return [
 		`[pi-guard] Your last answer was flagged as likely incorrect by the answer verifier (${finding.provider}/${finding.model}: ${pct}% >= ${thr}% threshold).`,
+		...(flaggedDims.length > 0 ? ["", "Flagged dimensions:", ...flaggedDims] : []),
 		"",
 		"Review your answer against the user prompt and the tool outputs from this turn. Fix any factual errors, logical contradictions, or claims not supported by the evidence. Do not mention this check.",
 	].join("\n");

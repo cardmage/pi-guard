@@ -41,7 +41,7 @@ pi -e ./
    - `404`, `410`, DNS `ENOTFOUND` → `NOT_FOUND` (실패)
    - `401`, `403`, `429`, `5xx`, 타임아웃, TLS/프록시/네트워크 오류 → `UNCERTAIN` (보류)
 4. **LLM 판정**: `UNCERTAIN` URL(실존 판정: `EXISTS` | `NOT_EXISTS` | `UNKNOWN`)과 `verifyContent: true`일 때 본문이 추출된 `OK` URL(인용 내용 검증: `SUPPORTED` | `CONTRADICTED` | `NOT_EXISTS`(soft-404) | `UNKNOWN`)을 한 번의 호출로 일괄 판정합니다. `UNKNOWN`이거나 모델/인증/파싱 오류가 발생하면 세션이 멈추지 않도록 통과(fail-open) 처리합니다.
-5. **Answer Decider (선택 기능, URL 검사와 독립 동작)**: `decider.enabled`가 `true`이면 답변 내 URL 유무와 상관없이 현재 턴의 `{ userPrompt, toolResults, assistantAnswer }`를 Classifier/Decision 모델(`ctx.modelRegistry.classify()`, 기본 프로바이더 `"llama.cpp"`)에 전달하여 직전 답변이 틀렸을 확률만 판별합니다. 확률이 `decider.threshold` 이상이면 `decider.mode`(`"rewrite"` 또는 `"warn"`)에 따라 재작성을 요청하거나 경고를 표시합니다.
+5. **Answer Decider (선택 기능, URL 검사와 독립 동작)**: `decider.enabled`가 `true`이면 답변 내 URL 유무와 상관없이 현재 턴의 `{ userPrompt, toolResults, assistantAnswer }`를 Classifier/Decision 모델(`ctx.modelRegistry.classify()`, 기본 프로바이더 `"llama.cpp"`)에 전달합니다. `toolResults` 유무에 따라 동적으로 구성되는 다각화 직교 질문 세트(긍정/부정 양방향 교차 질문)를 평가하고, 극성 불일치 감쇠(Polarity Cross-Check)를 포함한 가중 종합 확률을 계산하여 오탐(Yes/No 편향)을 억제합니다. 종합 오답 확률이 `decider.threshold` 이상이면 `decider.mode`(`"rewrite"` 또는 `"warn"`)에 따라 재작성을 요청하거나 경고를 표시합니다.
 
 ## 설정
 
@@ -115,7 +115,7 @@ pi -e ./
 | `decider.model` | `null` | 사용할 모델 ID(예: `"pplx-decider-v1.1-27b"`). `null`이면 해당 프로바이더에 로드된 단일 Classifier 모델을 자동 선택합니다. |
 | `decider.threshold` | `0.8` | 응답이 틀렸다고 판정할 확률 임계값(`(0, 1]`, `probability >= threshold`일 때 실패)입니다. |
 | `decider.timeoutMs` | `15000` | Classifier 호출 타임아웃(밀리초)입니다. |
-| `decider.instructions` | `null` | `wrong` 질문에 사용할 커스텀 판별 지시문입니다(`null`이면 기본 지시문 사용). |
+| `decider.instructions` | `null` | 추가할 커스텀 `wrong` 질문 판별 지시문입니다(`null`이면 내장 다각화 질문 세트만 사용). |
 
 ## 사내 프록시 및 TLS 검사 환경
 

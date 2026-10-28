@@ -58,8 +58,12 @@ export interface FakeRegistryOptions {
 	/** Never resolve unless the signal aborts. */
 	hang?: boolean;
 	noAuth?: string[];
-	/** Probability returned for the `wrong` bool question, or a function of the classifier context. */
+	/** Probability returned for the `wrong` bool question (or overall wrongness risk across questions), or a function of the classifier context. */
 	classifyProbability?: number | ((ctx: ClassifierContext, model: ClassifierModel<ClassifierApi>) => number);
+	/** Per-question boolean probabilities keyed by question ID, or a function returning them. */
+	classifyAnswers?:
+		| Record<string, number>
+		| ((ctx: ClassifierContext, model: ClassifierModel<ClassifierApi>) => Record<string, number>);
 	classifyStopReason?: ClassifierResult["stopReason"];
 	classifyErrorMessage?: string;
 	classifyThrows?: boolean;
@@ -104,21 +108,37 @@ export function fakeRegistry(opts: FakeRegistryOptions) {
 			classifyCalls.push({ model, context, options });
 			if (opts.classifyThrows) return Promise.reject(new Error("classify boom"));
 			if (opts.classifyHang) return new Promise<ClassifierResult>(() => {});
-			const prob =
-				typeof opts.classifyProbability === "function"
-					? opts.classifyProbability(context, model)
-					: (opts.classifyProbability ?? 0.1);
 			const stopReason = opts.classifyStopReason ?? "stop";
+			const POSITIVE_IDS = new Set(["faithful_to_evidence", "accurate_and_sound", "addresses_prompt"]);
+			const answers: ClassifierResult["answers"] = {};
+			if (opts.classifyAnswers) {
+				const rawMap =
+					typeof opts.classifyAnswers === "function" ? opts.classifyAnswers(context, model) : opts.classifyAnswers;
+				for (const [k, v] of Object.entries(rawMap)) {
+					answers[k] = { type: "bool", probability: v };
+				}
+			} else {
+				const prob =
+					typeof opts.classifyProbability === "function"
+						? opts.classifyProbability(context, model)
+						: (opts.classifyProbability ?? 0.1);
+				const qIds = Object.keys(context.questions);
+				if (qIds.length === 0) {
+					answers.wrong = { type: "bool", probability: prob };
+				} else {
+					for (const qId of qIds) {
+						answers[qId] = {
+							type: "bool",
+							probability: POSITIVE_IDS.has(qId) ? Math.round((1 - prob) * 10000) / 10000 : prob,
+						};
+					}
+				}
+			}
 			return Promise.resolve({
 				api: model.api,
 				provider: model.provider,
 				model: model.id,
-				answers: {
-					wrong: {
-						type: "bool",
-						probability: prob,
-					},
-				},
+				answers,
 				stopReason,
 				...(stopReason === "error" ? { errorMessage: opts.classifyErrorMessage ?? "classifier failed" } : {}),
 				timestamp: Date.now(),

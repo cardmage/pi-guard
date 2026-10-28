@@ -41,7 +41,7 @@ On `agent_before_settle` (when a run finishes with `outcome === "completed"`):
    - `404`, `410`, DNS `ENOTFOUND` → `NOT_FOUND` (fail)
    - `401`, `403`, `429`, `5xx`, timeouts, TLS/proxy/network errors → `UNCERTAIN`
 4. **LLM verification**: `UNCERTAIN` URLs (existence check: `EXISTS` | `NOT_EXISTS` | `UNKNOWN`) and `OK` URLs with extracted page text when `verifyContent: true` (content grounding check: `SUPPORTED` | `CONTRADICTED` | `NOT_EXISTS` for soft-404s | `UNKNOWN`) are judged in a single batch call. `UNKNOWN` and any model/auth/parse error fail open so the session never gets stuck.
-5. **Answer Decider (optional, independent of URLs)**: When `decider.enabled` is `true`, the extension also evaluates the assistant's overall final answer (along with the current turn's `userPrompt` and `toolResults`) using a classifier/decision model via `ctx.modelRegistry.classify()` (defaults to Pi's built-in `llama.cpp` provider). If the probability that the answer is wrong meets or exceeds `decider.threshold`, it triggers `decider.mode` (`"rewrite"` or `"warn"`).
+5. **Answer Decider (optional, independent of URLs)**: When `decider.enabled` is `true`, the extension evaluates the assistant's overall final answer (along with the current turn's `userPrompt` and `toolResults`) using a classifier/decision model via `ctx.modelRegistry.classify()` (defaults to Pi's built-in `llama.cpp` provider). It asks a context-adaptive set of orthogonal positive and negative boolean questions (different sets depending on whether `toolResults` are present) and aggregates them with polarity cross-checking to suppress Yes/No bias false positives. If the composite probability that the answer is wrong meets or exceeds `decider.threshold`, it triggers `decider.mode` (`"rewrite"` or `"warn"`).
 
 ## Configuration
 
@@ -115,7 +115,7 @@ Create `~/.pi/agent/pi-guard.json` (or `%USERPROFILE%\.pi\agent\pi-guard.json` o
 | `decider.model` | `null` | Classifier model ID (e.g. `"pplx-decider-v1.1-27b"`). When `null`, auto-selects if the provider has a single classifier model loaded. |
 | `decider.threshold` | `0.8` | Probability threshold in `(0, 1]` at or above which the answer is considered wrong (`probability >= threshold`). |
 | `decider.timeoutMs` | `15000` | Timeout for the classifier call in milliseconds. |
-| `decider.instructions` | `null` | Custom instructions for the boolean `wrong` question (`null` uses built-in instructions). |
+| `decider.instructions` | `null` | Additional custom instructions for a primary `wrong` boolean question (`null` uses only the built-in multi-angle question set). |
 
 ## Corporate proxies & TLS inspection
 

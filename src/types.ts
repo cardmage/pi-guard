@@ -42,7 +42,7 @@ export interface DeciderConfig {
 	/** Probability threshold in `(0, 1]` at or above which the answer is considered wrong. */
 	threshold: number;
 	timeoutMs: number;
-	/** Custom instructions for the `wrong` bool question. `null` = built-in instructions. */
+	/** Custom instructions for the `wrong` bool question. `null` = built-in multi-angle questions. */
 	instructions: string | null;
 }
 
@@ -98,6 +98,17 @@ export interface UrlFinding {
 	reason: string;
 }
 
+/** Score of a single evaluation dimension from the decider classifier. */
+export interface DeciderDimensionScore {
+	id: string;
+	polarity: "negative" | "positive";
+	/** Raw probability of `true` returned by the classifier in `[0, 1]`. */
+	probability: number;
+	/** Normalized wrongness risk in `[0, 1]` (`probability` for negative, `1 - probability` for positive). */
+	risk: number;
+	weight: number;
+}
+
 /** Verdict from the classifier/decision model for the assistant's overall answer. */
 export interface DeciderFinding {
 	provider: string;
@@ -109,4 +120,6 @@ export interface DeciderFinding {
 	failed: boolean;
 	/** Human-readable summary of the decision. */
 	reason: string;
+	/** Per-dimension breakdown from multi-angle evaluation. */
+	breakdown?: DeciderDimensionScore[];
 }
