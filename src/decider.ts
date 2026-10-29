@@ -26,6 +26,8 @@ export const DEFAULT_DECIDER_CRITERIA = {
 
 export interface DeciderQuestionSpec {
 	id: string;
+	/** Defect dimension used to pair negative and positive polarity checks (defaults to `id`). */
+	dimension?: string;
 	/**
 	 * - `"negative"`: `true` means the answer has a flaw (`risk = probability`).
 	 * - `"positive"`: `true` means the answer is good (`risk = 1 - probability`).
@@ -36,12 +38,13 @@ export interface DeciderQuestionSpec {
 	criteria: { true: string; false: string };
 }
 
-/** Orthogonal + bidirectional questions when `toolResults` are present in the turn. */
+/** Orthogonal + dimension-paired bidirectional questions when `toolResults` are present in the turn. */
 export const TOOL_TURN_QUESTIONS: readonly DeciderQuestionSpec[] = [
 	{
 		id: "contradicts_tools",
+		dimension: "grounding",
 		polarity: "negative",
-		weight: 0.35,
+		weight: 0.3,
 		instructions:
 			"Does `assistantAnswer` directly contradict facts, numbers, statuses, file contents, or error outcomes present in `toolResults`?",
 		criteria: {
@@ -51,8 +54,9 @@ export const TOOL_TURN_QUESTIONS: readonly DeciderQuestionSpec[] = [
 	},
 	{
 		id: "fabricated_claims",
+		dimension: "grounding",
 		polarity: "negative",
-		weight: 0.25,
+		weight: 0.2,
 		instructions:
 			"Does `assistantAnswer` fabricate unverified facts, invent tool outputs, or claim actions were performed when `toolResults` do not support them?",
 		criteria: {
@@ -62,6 +66,7 @@ export const TOOL_TURN_QUESTIONS: readonly DeciderQuestionSpec[] = [
 	},
 	{
 		id: "faithful_to_evidence",
+		dimension: "grounding",
 		polarity: "positive",
 		weight: 0.25,
 		instructions: "Is `assistantAnswer` faithful and accurate with respect to `toolResults` and `userPrompt`?",
@@ -71,23 +76,37 @@ export const TOOL_TURN_QUESTIONS: readonly DeciderQuestionSpec[] = [
 		},
 	},
 	{
+		id: "ignores_prompt",
+		dimension: "prompt_response",
+		polarity: "negative",
+		weight: 0.125,
+		instructions:
+			"Does `assistantAnswer` ignore, omit, or fail to answer an explicit question or core request in `userPrompt`?",
+		criteria: {
+			true: "The user prompt contains a specific question or request, and the answer misses, ignores, or fails to address it.",
+			false: "The answer appropriately responds to the user prompt (including casual conversation or greetings where no specific task was requested).",
+		},
+	},
+	{
 		id: "addresses_prompt",
+		dimension: "prompt_response",
 		polarity: "positive",
-		weight: 0.15,
+		weight: 0.125,
 		instructions: "Does `assistantAnswer` directly and coherently address `userPrompt` without internal contradictions?",
 		criteria: {
-			true: "The answer properly addresses the user prompt and is logically consistent.",
+			true: "The answer appropriately responds to the user prompt (including greetings or casual conversation) and is logically consistent.",
 			false: "The answer ignores key requirements of the prompt or contradicts itself.",
 		},
 	},
 ];
 
-/** Orthogonal + bidirectional questions when no tools were called in the turn. */
+/** Orthogonal + dimension-paired bidirectional questions when no tools were called in the turn. */
 export const NO_TOOL_TURN_QUESTIONS: readonly DeciderQuestionSpec[] = [
 	{
 		id: "fabricated_claims",
+		dimension: "soundness",
 		polarity: "negative",
-		weight: 0.3,
+		weight: 0.25,
 		instructions:
 			"Does `assistantAnswer` fabricate facts, invent external outputs, or claim to have executed tools or verified state not present in the turn context?",
 		criteria: {
@@ -97,8 +116,9 @@ export const NO_TOOL_TURN_QUESTIONS: readonly DeciderQuestionSpec[] = [
 	},
 	{
 		id: "logical_or_factual_error",
+		dimension: "soundness",
 		polarity: "negative",
-		weight: 0.3,
+		weight: 0.25,
 		instructions:
 			"Does `assistantAnswer` contain clear factual errors, broken reasoning, or internal self-contradictions in response to `userPrompt`?",
 		criteria: {
@@ -108,22 +128,36 @@ export const NO_TOOL_TURN_QUESTIONS: readonly DeciderQuestionSpec[] = [
 	},
 	{
 		id: "accurate_and_sound",
+		dimension: "soundness",
 		polarity: "positive",
 		weight: 0.25,
 		instructions: "Is `assistantAnswer` factually accurate and logically sound for `userPrompt`?",
 		criteria: {
-			true: "The answer is accurate, sound, and trustworthy.",
+			true: "The answer is accurate, sound, and trustworthy (including appropriate conversational or greeting responses with no factual errors).",
 			false: "The answer is inaccurate, misleading, or logically flawed.",
 		},
 	},
 	{
+		id: "ignores_prompt",
+		dimension: "prompt_response",
+		polarity: "negative",
+		weight: 0.125,
+		instructions:
+			"Does `assistantAnswer` ignore, omit, or fail to answer an explicit question or core request in `userPrompt`?",
+		criteria: {
+			true: "The user prompt contains a specific question or request, and the answer misses, ignores, or fails to address it.",
+			false: "The answer appropriately responds to the user prompt (including casual conversation or greetings where no specific task was requested).",
+		},
+	},
+	{
 		id: "addresses_prompt",
+		dimension: "prompt_response",
 		polarity: "positive",
-		weight: 0.15,
+		weight: 0.125,
 		instructions: "Does `assistantAnswer` directly and completely address the core request in `userPrompt`?",
 		criteria: {
-			true: "The answer directly addresses the user's request.",
-			false: "The answer misses or ignores the user's core request.",
+			true: "The answer appropriately responds to the user's request (including greetings or casual conversation where no specific task was requested).",
+			false: "The user prompt contains a specific question or request, and the answer misses or ignores it.",
 		},
 	},
 ];
@@ -285,12 +319,18 @@ function groupTriggeredRisk(items: readonly DeciderDimensionScore[]): {
 /**
  * Combines multi-question boolean probabilities into a single calibrated wrongness probability:
  * 1. Normalizes each question into a wrongness `risk` (`p` for negative polarity, `1 - p` for positive polarity).
- * 2. Within each polarity group, evaluates triggered dimensions (`risk >= 0.5`) so a single orthogonal flaw
- *    (e.g. tool contradiction or math error) is not diluted by unrelated passing dimensions (e.g. `addresses_prompt`).
- * 3. Cross-checks negative and positive polarity groups:
- *    - When both groups confirm a flaw (`negRisk >= 0.5` and `posRisk >= 0.5`), aggregates the triggered flaw dimensions.
- *    - When the groups disagree across `0.5` (e.g. Yes-bias where the classifier answers `true` to both flaw and
- *      faithfulness questions), dampens the overall weighted average proportional to their disagreement.
+ * 2. Groups questions by their defect `dimension` (e.g. `grounding`/`soundness` vs `prompt_response`) so polarity
+ *    cross-checking only compares positive and negative questions that test the same defect dimension.
+ * 3. Within each defect dimension:
+ *    - When both negative and positive questions confirm a flaw (`negRisk >= 0.5` and `posRisk >= 0.5`), marks the
+ *      dimension as a confirmed flaw using the triggered questions in that dimension.
+ *    - When negative and positive questions in the same dimension disagree across `0.5` (e.g. Yes-bias or a positive
+ *      question misfiring on casual chat while the negative flaw check is `< 0.5`), dampens that dimension's score
+ *      proportional to their disagreement.
+ * 4. Across independent defect dimensions:
+ *    - When one or more dimensions have a confirmed flaw, aggregates only the confirmed flaw dimensions so an
+ *      orthogonal passing dimension (e.g. accurate facts when the core request was missed, or vice versa) does not
+ *      dilute or dampen a real defect.
  */
 export function aggregateDeciderScores(
 	specs: readonly DeciderQuestionSpec[],
@@ -308,6 +348,7 @@ export function aggregateDeciderScores(
 		const risk = round4(spec.polarity === "negative" ? probability : 1 - probability);
 		breakdown.push({
 			id: spec.id,
+			dimension: spec.dimension ?? spec.id,
 			polarity: spec.polarity,
 			probability,
 			risk,
@@ -327,51 +368,109 @@ export function aggregateDeciderScores(
 			const probability = clamp01(fallbackWrong.probability);
 			return {
 				probability,
-				breakdown: [{ id: "wrong", polarity: "negative", probability, risk: probability, weight: 1 }],
+				breakdown: [
+					{ id: "wrong", dimension: "wrong", polarity: "negative", probability, risk: probability, weight: 1 },
+				],
 			};
 		}
 		return undefined;
 	}
 
-	let totalWeight = 0;
-	let weightedRiskSum = 0;
-	const negItems: DeciderDimensionScore[] = [];
-	const posItems: DeciderDimensionScore[] = [];
-
+	const byDimension = new Map<string, DeciderDimensionScore[]>();
 	for (const item of breakdown) {
-		totalWeight += item.weight;
-		weightedRiskSum += item.weight * item.risk;
-		if (item.polarity === "negative") {
-			negItems.push(item);
-		} else {
-			posItems.push(item);
-		}
+		const dimKey = item.dimension ?? item.id;
+		const group = byDimension.get(dimKey);
+		if (group) group.push(item);
+		else byDimension.set(dimKey, [item]);
 	}
 
-	if (totalWeight <= 0) return undefined;
-	let composite = weightedRiskSum / totalWeight;
+	interface EvaluatedDimension {
+		weight: number;
+		risk: number;
+		confirmed: boolean;
+		confirmedWeight: number;
+		confirmedWeightedSum: number;
+	}
 
-	if (negItems.length > 0 && posItems.length > 0) {
-		const neg = groupTriggeredRisk(negItems);
-		const pos = groupTriggeredRisk(posItems);
-		if (neg.risk >= 0.5 && pos.risk >= 0.5) {
-			// Both polarity groups confirm a flaw: aggregate only the triggered flaw dimensions
-			// so unrelated passing orthogonal dimensions do not dilute a real error below threshold.
-			const activeWeight = neg.triggeredWeight + pos.triggeredWeight;
-			if (activeWeight > 0) {
-				composite = (neg.triggeredWeightedSum + pos.triggeredWeightedSum) / activeWeight;
+	const evaluatedDims: EvaluatedDimension[] = [];
+	for (const items of byDimension.values()) {
+		let dimWeight = 0;
+		let dimWeightedSum = 0;
+		const negItems: DeciderDimensionScore[] = [];
+		const posItems: DeciderDimensionScore[] = [];
+
+		for (const item of items) {
+			dimWeight += item.weight;
+			dimWeightedSum += item.weight * item.risk;
+			if (item.polarity === "negative") {
+				negItems.push(item);
+			} else {
+				posItems.push(item);
 			}
-		} else if (neg.risk >= 0.5 || pos.risk >= 0.5) {
-			// Polarity disagreement (one group flags a flaw >= 0.5 while the other says < 0.5):
-			// dampen the composite score proportional to their disagreement to suppress yes/no bias false positives.
-			const disagreement = Math.abs(neg.risk - pos.risk);
-			composite *= 1 - 0.5 * disagreement;
 		}
+		if (dimWeight <= 0) continue;
+
+		let dimRisk = dimWeightedSum / dimWeight;
+		let confirmed = false;
+		let confirmedWeight = 0;
+		let confirmedWeightedSum = 0;
+
+		if (negItems.length > 0 && posItems.length > 0) {
+			const neg = groupTriggeredRisk(negItems);
+			const pos = groupTriggeredRisk(posItems);
+			if (neg.risk >= 0.5 && pos.risk >= 0.5) {
+				// Both polarities within this defect dimension confirm a flaw.
+				confirmedWeight = neg.triggeredWeight + pos.triggeredWeight;
+				confirmedWeightedSum = neg.triggeredWeightedSum + pos.triggeredWeightedSum;
+				if (confirmedWeight > 0) {
+					dimRisk = confirmedWeightedSum / confirmedWeight;
+					confirmed = true;
+				}
+			} else if (neg.risk >= 0.5 || pos.risk >= 0.5) {
+				// Polarity disagreement within the same defect dimension (e.g. Yes/No bias or
+				// positive question misfiring on casual chat when negative flaw risk is < 0.5).
+				const disagreement = Math.abs(neg.risk - pos.risk);
+				dimRisk *= 1 - 0.5 * disagreement;
+			}
+		} else {
+			const single = groupTriggeredRisk(items);
+			if (single.triggeredWeight > 0) {
+				dimRisk = single.risk;
+				confirmed = true;
+				confirmedWeight = single.triggeredWeight;
+				confirmedWeightedSum = single.triggeredWeightedSum;
+			}
+		}
+
+		evaluatedDims.push({
+			weight: dimWeight,
+			risk: dimRisk,
+			confirmed,
+			confirmedWeight,
+			confirmedWeightedSum,
+		});
+	}
+
+	if (evaluatedDims.length === 0) return undefined;
+
+	const confirmedDims = evaluatedDims.filter((d) => d.confirmed);
+	let composite = 0;
+	if (confirmedDims.length > 0) {
+		let activeWeight = 0;
+		let activeSum = 0;
+		for (const d of confirmedDims) {
+			activeWeight += d.confirmedWeight;
+			activeSum += d.confirmedWeightedSum;
+		}
+		composite = activeWeight > 0 ? activeSum / activeWeight : 0;
 	} else {
-		const single = groupTriggeredRisk(breakdown);
-		if (single.triggeredWeight > 0) {
-			composite = single.risk;
+		let totalWeight = 0;
+		let weightedSum = 0;
+		for (const d of evaluatedDims) {
+			totalWeight += d.weight;
+			weightedSum += d.weight * d.risk;
 		}
+		composite = totalWeight > 0 ? weightedSum / totalWeight : 0;
 	}
 
 	return {

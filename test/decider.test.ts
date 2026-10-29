@@ -117,14 +117,15 @@ describe("aggregateDeciderScores (Ideas 1 & 2: orthogonal weights + polarity cro
 			{ instructions: null },
 		);
 		const agg = aggregateDeciderScores(specs, {
-			contradicts_tools: { type: "bool", probability: 0.95 }, // neg, w=0.35 -> risk 0.95
-			fabricated_claims: { type: "bool", probability: 0.85 }, // neg, w=0.25 -> risk 0.85
+			contradicts_tools: { type: "bool", probability: 0.95 }, // neg, w=0.30 -> risk 0.95
+			fabricated_claims: { type: "bool", probability: 0.85 }, // neg, w=0.20 -> risk 0.85
 			faithful_to_evidence: { type: "bool", probability: 0.1 }, // pos, w=0.25 -> risk 0.90
-			addresses_prompt: { type: "bool", probability: 0.2 }, // pos, w=0.15 -> risk 0.80
+			ignores_prompt: { type: "bool", probability: 0.8 }, // neg, w=0.125 -> risk 0.80
+			addresses_prompt: { type: "bool", probability: 0.2 }, // pos, w=0.125 -> risk 0.80
 		});
 		expect(agg).toBeDefined();
-		// Weighted sum: 0.35*0.95 + 0.25*0.85 + 0.25*0.90 + 0.15*0.80 = 0.3325 + 0.2125 + 0.225 + 0.12 = 0.89
-		expect(agg!.probability).toBeCloseTo(0.89, 4);
+		// Weighted sum: 0.30*0.95 + 0.20*0.85 + 0.25*0.90 + 0.125*0.80 + 0.125*0.80 = 0.285 + 0.17 + 0.225 + 0.10 + 0.10 = 0.88
+		expect(agg!.probability).toBeCloseTo(0.88, 4);
 	});
 
 	it("dampens false positives when classifier exhibits Yes-bias (both negative and positive answered true)", () => {
@@ -137,12 +138,11 @@ describe("aggregateDeciderScores (Ideas 1 & 2: orthogonal weights + polarity cro
 			contradicts_tools: { type: "bool", probability: 0.9 }, // risk = 0.9
 			fabricated_claims: { type: "bool", probability: 0.9 }, // risk = 0.9
 			faithful_to_evidence: { type: "bool", probability: 0.9 }, // risk = 0.1 (since positive)
+			ignores_prompt: { type: "bool", probability: 0.9 }, // risk = 0.9
 			addresses_prompt: { type: "bool", probability: 0.9 }, // risk = 0.1 (since positive)
 		});
 		expect(agg).toBeDefined();
-		// Raw weighted average would be 0.6*0.9 + 0.4*0.1 = 0.58,
-		// and polarity disagreement (|0.9 - 0.1| = 0.8) dampens it further: 0.58 * (1 - 0.4) = 0.348
-		expect(agg!.probability).toBeCloseTo(0.348, 3);
+		expect(agg!.probability).toBeCloseTo(0.36, 3);
 		expect(agg!.probability).toBeLessThan(0.5);
 	});
 
@@ -152,6 +152,7 @@ describe("aggregateDeciderScores (Ideas 1 & 2: orthogonal weights + polarity cro
 			fabricated_claims: { type: "bool", probability: 0.85 }, // risk = 0.85
 			logical_or_factual_error: { type: "bool", probability: 0.85 }, // risk = 0.85
 			accurate_and_sound: { type: "bool", probability: 0.85 }, // risk = 0.15
+			ignores_prompt: { type: "bool", probability: 0.1 }, // risk = 0.10
 			addresses_prompt: { type: "bool", probability: 0.9 }, // risk = 0.10
 		});
 		expect(agg).toBeDefined();
@@ -164,10 +165,11 @@ describe("aggregateDeciderScores (Ideas 1 & 2: orthogonal weights + polarity cro
 			{ instructions: null },
 		);
 		const agg = aggregateDeciderScores(specs, {
-			contradicts_tools: { type: "bool", probability: 0.96 }, // neg, w=0.35 -> risk 0.96 (triggered)
-			fabricated_claims: { type: "bool", probability: 0.05 }, // neg, w=0.25 -> risk 0.05 (not triggered)
+			contradicts_tools: { type: "bool", probability: 0.96 }, // neg, w=0.30 -> risk 0.96 (triggered)
+			fabricated_claims: { type: "bool", probability: 0.05 }, // neg, w=0.20 -> risk 0.05 (not triggered)
 			faithful_to_evidence: { type: "bool", probability: 0.04 }, // pos, w=0.25 -> risk 0.96 (triggered)
-			addresses_prompt: { type: "bool", probability: 0.95 }, // pos, w=0.15 -> risk 0.05 (not triggered)
+			ignores_prompt: { type: "bool", probability: 0.05 }, // neg, w=0.125 -> risk 0.05 (not triggered)
+			addresses_prompt: { type: "bool", probability: 0.95 }, // pos, w=0.125 -> risk 0.05 (not triggered)
 		});
 		expect(agg).toBeDefined();
 		expect(agg!.probability).toBeCloseTo(0.96, 4);
@@ -177,14 +179,55 @@ describe("aggregateDeciderScores (Ideas 1 & 2: orthogonal weights + polarity cro
 	it("does not dilute a single orthogonal flaw (factual/math error in no-tool turn) when unrelated dimensions pass", () => {
 		const specs = getDeciderQuestionSpecs({ toolResults: [] }, { instructions: null });
 		const agg = aggregateDeciderScores(specs, {
-			fabricated_claims: { type: "bool", probability: 0.02 }, // neg, w=0.30 -> risk 0.02 (not triggered)
-			logical_or_factual_error: { type: "bool", probability: 0.95 }, // neg, w=0.30 -> risk 0.95 (triggered)
+			fabricated_claims: { type: "bool", probability: 0.02 }, // neg, w=0.25 -> risk 0.02 (not triggered)
+			logical_or_factual_error: { type: "bool", probability: 0.95 }, // neg, w=0.25 -> risk 0.95 (triggered)
 			accurate_and_sound: { type: "bool", probability: 0.05 }, // pos, w=0.25 -> risk 0.95 (triggered)
-			addresses_prompt: { type: "bool", probability: 0.98 }, // pos, w=0.15 -> risk 0.02 (not triggered)
+			ignores_prompt: { type: "bool", probability: 0.02 }, // neg, w=0.125 -> risk 0.02 (not triggered)
+			addresses_prompt: { type: "bool", probability: 0.98 }, // pos, w=0.125 -> risk 0.02 (not triggered)
 		});
 		expect(agg).toBeDefined();
 		expect(agg!.probability).toBeCloseTo(0.95, 4);
 		expect(agg!.probability).toBeGreaterThanOrEqual(0.8);
+	});
+
+	it("does not dampen prompt_response flaw when soundness questions pass (Issue #4)", () => {
+		const specs = getDeciderQuestionSpecs({ toolResults: [] }, { instructions: null });
+		// Answer is factually accurate and sound (0.01 risk), but misses the user's core request (0.99 risk)
+		const aggPaired = aggregateDeciderScores(specs, {
+			fabricated_claims: { type: "bool", probability: 0.01 }, // risk = 0.01
+			logical_or_factual_error: { type: "bool", probability: 0.01 }, // risk = 0.01
+			accurate_and_sound: { type: "bool", probability: 0.99 }, // risk = 0.01
+			ignores_prompt: { type: "bool", probability: 0.99 }, // risk = 0.99 (triggered)
+			addresses_prompt: { type: "bool", probability: 0.01 }, // risk = 0.99 (triggered)
+		});
+		expect(aggPaired).toBeDefined();
+		expect(aggPaired!.probability).toBeCloseTo(0.99, 4);
+		expect(aggPaired!.probability).toBeGreaterThanOrEqual(0.8);
+
+		// Also works if only the 4 original questions were answered
+		const aggFour = aggregateDeciderScores(specs, {
+			fabricated_claims: { type: "bool", probability: 0.01 },
+			logical_or_factual_error: { type: "bool", probability: 0.01 },
+			accurate_and_sound: { type: "bool", probability: 0.99 },
+			addresses_prompt: { type: "bool", probability: 0.01 }, // risk = 0.99
+		});
+		expect(aggFour).toBeDefined();
+		expect(aggFour!.probability).toBeCloseTo(0.99, 4);
+	});
+
+	it("does not falsely flag casual greetings when negative flaw checks are false even if positive prompt check wobbles", () => {
+		const specs = getDeciderQuestionSpecs({ toolResults: [] }, { instructions: null });
+		// e.g. User: "안녕", Assistant: "안녕하세요" -> no factual errors, no ignored request (ignores_prompt=0.01),
+		// even if addresses_prompt returns low probability (0.1 -> risk 0.9) because there was no "core request".
+		const agg = aggregateDeciderScores(specs, {
+			fabricated_claims: { type: "bool", probability: 0.01 }, // risk = 0.01
+			logical_or_factual_error: { type: "bool", probability: 0.01 }, // risk = 0.01
+			accurate_and_sound: { type: "bool", probability: 0.99 }, // risk = 0.01
+			ignores_prompt: { type: "bool", probability: 0.01 }, // risk = 0.01 (did NOT ignore a request)
+			addresses_prompt: { type: "bool", probability: 0.1 }, // risk = 0.90 (unconfirmed positive wobble)
+		});
+		expect(agg).toBeDefined();
+		expect(agg!.probability).toBeLessThan(0.2);
 	});
 });
 
@@ -213,7 +256,7 @@ describe("evaluateWithDecider", () => {
 		expect(out.finding?.failed).toBe(true);
 		expect(out.finding?.reason).toContain("decider (llama.cpp/pplx-decider-v1.1-27b): 92% wrong (threshold 80%)");
 		expect(out.finding?.reason).toContain("contradicts_tools=92%");
-		expect(out.finding?.breakdown).toHaveLength(4);
+		expect(out.finding?.breakdown).toHaveLength(5);
 	});
 
 	it("passes the answer when probability < threshold", async () => {

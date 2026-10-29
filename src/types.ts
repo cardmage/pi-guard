@@ -101,6 +101,8 @@ export interface UrlFinding {
 /** Score of a single evaluation dimension from the decider classifier. */
 export interface DeciderDimensionScore {
 	id: string;
+	/** Defect dimension this question belongs to for polarity pairing. */
+	dimension?: string;
 	polarity: "negative" | "positive";
 	/** Raw probability of `true` returned by the classifier in `[0, 1]`. */
 	probability: number;
