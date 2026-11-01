@@ -1,4 +1,4 @@
-# Pi Guard (`pi-guard`) 구현 계획서
+# Pi Hallucination Guard (`pi-hallucination-guard`) 구현 계획서
 
 > 대상: Pi `@earendil-works/pi-coding-agent` 1.4.x Extension (npm pi package로 배포)
 > 지원 OS: Windows / macOS / Linux (Node ≥ 22.19, Pi 요구사항과 동일)
@@ -45,7 +45,7 @@ LLM만으로는 URL 실존 여부를 알 수 없으므로(그럴듯함만 판단
 ## 3. 설정
 
 ### 3.1 위치
-전역 단일 파일: `~/.pi/agent/pi-guard.json` (`getAgentDir()` 기준). 프로젝트별 설정 없음.
+전역 단일 파일: `~/.pi/agent/pi-hallucination-guard.json` (`getAgentDir()` 기준). 프로젝트별 설정 없음.
 - `session_start`마다 다시 읽음 (`/reload`로 반영).
 - 파일 없음 → 전부 기본값. 파싱/검증 오류 → 기본값 사용 + `ctx.ui.notify` 경고 1회.
 
@@ -109,7 +109,7 @@ LLM만으로는 URL 실존 여부를 알 수 없으므로(그럴듯함만 판단
 - 미지원: OS 시스템 프록시 자동 감지(Windows 인터넷 옵션, macOS 네트워크 설정), PAC/WPAD. → 환경변수 또는 `http.proxy`로 명시해야 함.
 
 ### 3.4 크로스 플랫폼 원칙
-- 경로: `path.join(getAgentDir(), "pi-guard.json")`. `~`·구분자 하드코딩 금지 (`PI_CODING_AGENT_DIR` 오버라이드 자동 반영).
+- 경로: `path.join(getAgentDir(), "pi-hallucination-guard.json")`. `~`·구분자 하드코딩 금지 (`PI_CODING_AGENT_DIR` 오버라이드 자동 반영).
 - 설정 파일 읽기: UTF-8 BOM 제거(`\uFEFF`, Windows 메모장 대응) 후 `JSON.parse`.
 - 셸 명령/OS별 바이너리(curl 등) 사용 금지. 네트워크는 전부 Node API.
 - npm scripts는 OS 중립 명령만 사용 (`rm -rf`, `VAR=x cmd` 금지 → `vitest`, `tsc`만).
@@ -133,10 +133,10 @@ outcome != completed or !enabled ───────────────�
        → ctx.ui.notify(경고) + pi.appendEntry 기록(컨텍스트 미포함), return undefined
 ```
 
-- `customMessage` = `{ type: "custom_message", customType: "pi-guard", display: true, content }`
+- `customMessage` = `{ type: "custom_message", customType: "pi-hallucination-guard", display: true, content }`
   - content: 문제 URL 목록 + 근거(HTTP 상태/LLM reason) + "해당 URL을 제거하거나, 도구로 확인한 실제 URL로 교체해 답변을 다시 작성하라"는 지시.
 - **반환 `entries`는 기존 값을 덮어쓰므로 반드시 `...event.entries`를 포함**.
-- 진행 중 `ctx.ui.setStatus("pi-guard", "Checking N URLs…")`, 끝나면 해제. `ctx.hasUI`가 false면 UI 호출 생략.
+- 진행 중 `ctx.ui.setStatus("pi-hallucination-guard", "Checking N URLs…")`, 끝나면 해제. `ctx.hasUI`가 false면 UI 호출 생략.
 - 중첩 호출은 `ctx.signal`을 전달해 사용자 abort 시 즉시 중단.
 
 ### 4.1 LLM 호출
@@ -155,7 +155,7 @@ const msg = await stream.result();
 ### Phase 1: 프로젝트 기초
 - [x] 디렉토리 생성, `plan.md` 작성
 - [x] `package.json`
-  - `name: "pi-guard"`, `type: "module"`, `keywords: ["pi-package"]`
+  - `name: "pi-hallucination-guard"`, `type: "module"`, `keywords: ["pi-package"]`
   - `pi.extensions: ["./src/index.ts"]` (jiti 로드, 빌드 불필요)
   - `peerDependencies`: `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai` → `"*"` (`dependencies`에 넣지 않음)
   - `dependencies`: `undici@^8`
@@ -191,12 +191,12 @@ const msg = await stream.result();
   - 검증 모델 미지정 → 세션 모델 사용 / 잘못된 모델 → 경고 후 세션 모델
   - 검증 중 Esc → 즉시 중단
 - [x] CI: GitHub Actions 매트릭스 `windows-latest` / `macos-latest` / `ubuntu-latest` × Node 22, 24 에서 `tsc --noEmit` + `vitest run`
-- [x] README (설치: `pi install npm:pi-guard`, 설정 예시, OS별 프록시 환경변수 설정법 — PowerShell `$env:HTTPS_PROXY` / `setx`, bash·zsh `export`)
+- [x] README (설치: `pi install npm:pi-hallucination-guard`, 설정 예시, OS별 프록시 환경변수 설정법 — PowerShell `$env:HTTPS_PROXY` / `setx`, bash·zsh `export`)
 - [ ] `npm publish`
 
 ## 6. 파일 구조
 ```
-pi-guard/
+pi-hallucination-guard/
 ├── docs/project-goal/plan.md
 ├── README.md
 ├── package.json
@@ -206,7 +206,7 @@ pi-guard/
 ├── src/
 │   ├── index.ts        # 엔트리: 이벤트 등록, 파이프라인, mode 처리
 │   ├── types.ts        # 설정/결과 타입
-│   ├── config.ts       # ~/.pi/agent/pi-guard.json 로드·검증
+│   ├── config.ts       # ~/.pi/agent/pi-hallucination-guard.json 로드·검증
 │   ├── extractor.ts    # URL 추출, 컨텍스트 화이트리스트 수집
 │   ├── filter.ts       # 사설망/예시/bypass 판별
 │   ├── http-check.ts   # HTTP 실존 확인

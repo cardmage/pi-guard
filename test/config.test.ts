@@ -126,7 +126,17 @@ describe("loadConfig", () => {
 	});
 
 	it("builds the path with the platform separator", () => {
-		expect(getConfigPath(dir)).toBe(join(dir, "pi-guard.json"));
+		expect(getConfigPath(dir)).toBe(join(dir, "pi-hallucination-guard.json"));
+	});
+
+	it("falls back to legacy pi-guard.json if it exists and new file does not", async () => {
+		const legacyDir = await mkdtemp(join(tmpdir(), "cg-legacy-"));
+		try {
+			await writeFile(join(legacyDir, "pi-guard.json"), "{}");
+			expect(getConfigPath(legacyDir)).toBe(join(legacyDir, "pi-guard.json"));
+		} finally {
+			await rm(legacyDir, { recursive: true, force: true });
+		}
 	});
 
 	it("missing file → defaults, no warnings", async () => {

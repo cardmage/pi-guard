@@ -1,12 +1,12 @@
 {
-  "name": "pi-guard",
+  "name": "pi-hallucination-guard",
   "version": "0.1.0",
-  "description": "Pi extension that verifies URLs in the agent's final answer and catches hallucinated links (HTTP check first, LLM fallback).",
+  "description": "Pi extension that verifies URLs and detects hallucinated answers (HTTP check, verifier LLM, and local decider model).",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/cardmage/pi-guard.git"
+    "url": "git+https://github.com/cardmage/pi-hallucination-guard.git"
   },
   "keywords": [
     "pi-package",
@@ -23,7 +23,9 @@
   },
   "files": [
     "src",
-    "README.md"
+    "README.md",
+    "README.ko.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=22.19.0"

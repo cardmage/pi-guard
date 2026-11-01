@@ -1,4 +1,4 @@
-/** Shared configuration and result types for pi-guard. */
+/** Shared configuration and result types for pi-hallucination-guard. */
 
 export const MODES = ["rewrite", "warn"] as const;
 export type Mode = (typeof MODES)[number];
@@ -46,7 +46,7 @@ export interface DeciderConfig {
 	instructions: string | null;
 }
 
-export interface PiGuardConfig {
+export interface PiHallucinationGuardConfig {
 	enabled: boolean;
 	mode: Mode;
 	maxRewrites: number;
@@ -59,6 +59,9 @@ export interface PiGuardConfig {
 	http: HttpConfig;
 	decider: DeciderConfig;
 }
+
+/** Alias for PiHallucinationGuardConfig for backward compatibility. */
+export type PiGuardConfig = PiHallucinationGuardConfig;
 
 /** Outcome of the HTTP existence check. */
 export type HttpVerdict = "OK" | "NOT_FOUND" | "UNCERTAIN";
@@ -101,6 +104,8 @@ export interface UrlFinding {
 /** Score of a single evaluation dimension from the decider classifier. */
 export interface DeciderDimensionScore {
 	id: string;
+	/** Defect dimension this question belongs to for polarity pairing. */
+	dimension?: string;
 	polarity: "negative" | "positive";
 	/** Raw probability of `true` returned by the classifier in `[0, 1]`. */
 	probability: number;

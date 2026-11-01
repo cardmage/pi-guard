@@ -1,5 +1,5 @@
 /**
- * pi-guard: verifies URLs in the agent's final answer.
+ * pi-hallucination-guard: verifies URLs and detects hallucinated answers in the agent's final answer.
  *
  * HTTP check first (404/410/NXDOMAIN = hallucinated), LLM judgement only for URLs the
  * HTTP check cannot decide. Hallucinated URLs trigger a rewrite request (mode "rewrite",
@@ -27,7 +27,7 @@ import { checkUrls } from "./http-check.ts";
 import type { DeciderFinding, HttpCheckResult, PiGuardConfig, UrlFinding } from "./types.ts";
 import { resolveVerifierModel, type VerifyItem, verifyWithLlm } from "./verifier.ts";
 
-export const STATUS_KEY = "pi-guard";
+export const STATUS_KEY = "pi-hallucination-guard";
 
 interface GuardState {
 	config: PiGuardConfig;
@@ -71,7 +71,7 @@ function describeHttp(r: HttpCheckResult | undefined): string {
 export function buildRewriteMessage(failed: readonly UrlFinding[]): string {
 	const lines = failed.map((f) => `- ${f.url} — ${f.reason}`);
 	return [
-		"[pi-guard] Your last answer cites URLs that appear not to exist or do not support the cited claim:",
+		"[pi-hallucination-guard] Your last answer cites URLs that appear not to exist or do not support the cited claim:",
 		...lines,
 		"",
 		"Rewrite your answer. Remove these URLs, fix the inaccurate claims, or replace them with real URLs whose content you have verified with a tool (for example a web search or by fetching the page). Do not guess or construct URLs. Keep the rest of the answer the same, and do not mention this check.",
@@ -81,7 +81,7 @@ export function buildRewriteMessage(failed: readonly UrlFinding[]): string {
 /** Warning shown to the user when hallucinated or unsupported URLs remain. */
 export function buildWarning(failed: readonly UrlFinding[]): string {
 	const lines = failed.map((f) => `• ${f.url} (${f.reason})`);
-	return [`pi-guard: ${failed.length} URL(s) in the answer failed verification:`, ...lines].join("\n");
+	return [`pi-hallucination-guard: ${failed.length} URL(s) in the answer failed verification:`, ...lines].join("\n");
 }
 
 /** Feedback sent to the agent when the decider model flags the answer as wrong. */
@@ -93,7 +93,7 @@ export function buildDeciderRewriteMessage(finding: DeciderFinding): string {
 		.sort((a, b) => b.risk - a.risk)
 		.map((b) => `- ${b.id}: ${Math.round(b.risk * 100)}% risk`);
 	return [
-		`[pi-guard] Your last answer was flagged as likely incorrect by the answer verifier (${finding.provider}/${finding.model}: ${pct}% >= ${thr}% threshold).`,
+		`[pi-hallucination-guard] Your last answer was flagged as likely incorrect by the answer verifier (${finding.provider}/${finding.model}: ${pct}% >= ${thr}% threshold).`,
 		...(flaggedDims.length > 0 ? ["", "Flagged dimensions:", ...flaggedDims] : []),
 		"",
 		"Review your answer against the user prompt and the tool outputs from this turn. Fix any factual errors, logical contradictions, or claims not supported by the evidence. Do not mention this check.",
@@ -109,10 +109,10 @@ export function buildDeciderWarning(finding: DeciderFinding): string {
 		.sort((a, b) => b.risk - a.risk)
 		.map((b) => `${b.id}=${Math.round(b.risk * 100)}%`);
 	const detailSuffix = topRisks.length > 0 ? ` [${topRisks.join(", ")}]` : "";
-	return `pi-guard: answer flagged as potentially incorrect (${pct}% >= ${thr}%, model: ${finding.provider}/${finding.model})${detailSuffix}`;
+	return `pi-hallucination-guard: answer flagged as potentially incorrect (${pct}% >= ${thr}%, model: ${finding.provider}/${finding.model})${detailSuffix}`;
 }
 
-export default function piGuard(pi: ExtensionAPI): void {
+export default function piHallucinationGuard(pi: ExtensionAPI): void {
 	const state: GuardState = {
 		config: defaultConfig(),
 		net: undefined,
@@ -144,14 +144,14 @@ export default function piGuard(pi: ExtensionAPI): void {
 		const loaded = await loadConfig(path);
 		state.config = loaded.config;
 		if (loaded.warnings.length > 0) {
-			notify(ctx, `pi-guard: problems in ${path}:\n${loaded.warnings.map((w) => `• ${w}`).join("\n")}`, "warning");
+			notify(ctx, `pi-hallucination-guard: problems in ${path}:\n${loaded.warnings.map((w) => `• ${w}`).join("\n")}`, "warning");
 		}
 		if (state.config.enabled && state.config.http.enabled) {
 			try {
 				state.net = createDispatcher(state.config.http);
-				for (const w of state.net.warnings) notify(ctx, `pi-guard: ${w}`, "warning");
+				for (const w of state.net.warnings) notify(ctx, `pi-hallucination-guard: ${w}`, "warning");
 			} catch (err) {
-				notify(ctx, `pi-guard: cannot create HTTP client (${err instanceof Error ? err.message : String(err)}); using LLM-only checks`, "warning");
+				notify(ctx, `pi-hallucination-guard: cannot create HTTP client (${err instanceof Error ? err.message : String(err)}); using LLM-only checks`, "warning");
 			}
 		}
 	});
@@ -238,7 +238,7 @@ export default function piGuard(pi: ExtensionAPI): void {
 				const sample = netFailures[0]?.error ?? freshHttpResults[0]?.error ?? "";
 				notify(
 					ctx,
-					`pi-guard: HTTP checks are failing (${state.net?.description ?? "no HTTP client"}): ${sample}\nCheck proxy/certificate settings (HTTPS_PROXY / http.proxy / http.useSystemCa). Falling back to LLM judgement.`,
+					`pi-hallucination-guard: HTTP checks are failing (${state.net?.description ?? "no HTTP client"}): ${sample}\nCheck proxy/certificate settings (HTTPS_PROXY / http.proxy / http.useSystemCa). Falling back to LLM judgement.`,
 					"warning",
 				);
 			}
@@ -267,7 +267,7 @@ export default function piGuard(pi: ExtensionAPI): void {
 
 		if (needsLlm.length > 0) {
 			const resolved = resolveVerifierModel(cfg.verifier, ctx.modelRegistry, ctx.model);
-			if (resolved.warning) warnOnce(ctx, `pi-guard: ${resolved.warning}`);
+			if (resolved.warning) warnOnce(ctx, `pi-hallucination-guard: ${resolved.warning}`);
 			const items: VerifyItem[] = needsLlm.map(({ p, http }) => ({
 				url: p.url,
 				httpStatus: http.status,
@@ -276,7 +276,7 @@ export default function piGuard(pi: ExtensionAPI): void {
 				context: snippetAround(answer, p.index, p.length),
 			}));
 			const statusSuffix = cfg.decider.enabled ? " & answer…" : "…";
-			setStatus(ctx, `pi-guard: asking verifier about ${items.length} URL(s)${statusSuffix}`);
+			setStatus(ctx, `pi-hallucination-guard: asking verifier about ${items.length} URL(s)${statusSuffix}`);
 			const outcome = await verifyWithLlm(items, {
 				model: resolved.model,
 				registry: ctx.modelRegistry,
@@ -284,7 +284,7 @@ export default function piGuard(pi: ExtensionAPI): void {
 				signal,
 			});
 			if (signal.aborted) return [];
-			if (outcome.error && !/aborted/.test(outcome.error)) warnOnce(ctx, `pi-guard: ${outcome.error} (URLs passed unchecked)`);
+			if (outcome.error && !/aborted/.test(outcome.error)) warnOnce(ctx, `pi-hallucination-guard: ${outcome.error} (URLs passed unchecked)`);
 			for (const { p, http } of needsLlm) {
 				const llm = outcome.results.get(p.url) ?? { url: p.url, verdict: "UNKNOWN" as const, reason: "no verdict" };
 				const httpPart = describeHttp(http);
@@ -312,7 +312,7 @@ export default function piGuard(pi: ExtensionAPI): void {
 	): Promise<DeciderFinding | undefined> {
 		const decCfg = state.config.decider;
 		const resolved = resolveDeciderModel(decCfg, ctx.modelRegistry);
-		if (resolved.warning) warnOnce(ctx, `pi-guard: ${resolved.warning}`);
+		if (resolved.warning) warnOnce(ctx, `pi-hallucination-guard: ${resolved.warning}`);
 		if (!resolved.model) return undefined;
 
 		const turn = extractTurnContext(messages, assistantIdx);
@@ -324,7 +324,7 @@ export default function piGuard(pi: ExtensionAPI): void {
 		});
 		if (signal.aborted) return undefined;
 		if (outcome.error && !/aborted/.test(outcome.error)) {
-			warnOnce(ctx, `pi-guard: ${outcome.error} (answer passed unchecked)`);
+			warnOnce(ctx, `pi-hallucination-guard: ${outcome.error} (answer passed unchecked)`);
 		}
 		return outcome.finding;
 	}
@@ -366,11 +366,11 @@ export default function piGuard(pi: ExtensionAPI): void {
 		}
 
 		if (candidates.length > 0 && runDecider) {
-			setStatus(ctx, `pi-guard: checking ${candidates.length} URL(s) & answer…`);
+			setStatus(ctx, `pi-hallucination-guard: checking ${candidates.length} URL(s) & answer…`);
 		} else if (candidates.length > 0) {
-			setStatus(ctx, `pi-guard: checking ${candidates.length} URL(s)…`);
+			setStatus(ctx, `pi-hallucination-guard: checking ${candidates.length} URL(s)…`);
 		} else {
-			setStatus(ctx, "pi-guard: checking answer with decider…");
+			setStatus(ctx, "pi-hallucination-guard: checking answer with decider…");
 		}
 
 		try {
