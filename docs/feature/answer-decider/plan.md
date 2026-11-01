@@ -1,14 +1,14 @@
 # Answer Decider 기능 추가 계획서 (`plan.md`)
 
-> 대상: `pi-guard` (`@earendil-works/pi-coding-agent` 1.4.x Extension)
+> 대상: `pi-hallucination-guard` (`@earendil-works/pi-coding-agent` 1.4.x Extension)
 > 브랜치: `feat/answer-decider`
 
 ## 1. 개요
 
-기존 `pi-guard`의 **URL 검증(HTTP + LLM Verifier)** 기능과 별개로, 에이전트의 **직전 최종 응답 전체**를 로컬 Classifier/Decision 모델(예: `llama.cpp` 프로바이더를 통한 `pplx-decider-v1.1-27b` 등 설정된 모델)에 전달하여 **"응답이 틀렸는지(환각·모순·오류 여부)만 확률로 판별"**하는 기능을 추가한다.
+기존 `pi-hallucination-guard`의 **URL 검증(HTTP + LLM Verifier)** 기능과 별개로, 에이전트의 **직전 최종 응답 전체**를 로컬 Classifier/Decision 모델(예: `llama.cpp` 프로바이더를 통한 `pplx-decider-v1.1-27b` 등 설정된 모델)에 전달하여 **"응답이 틀렸는지(환각·모순·오류 여부)만 확률로 판별"**하는 기능을 추가한다.
 
 - **URL 검사와 완전 분리**: 응답에 URL이 없어도 `decider.enabled: true`이면 직전 응답을 검사한다. 응답에 URL이 있는 경우 URL 검사와 Decider 검사가 각각 독립적인 설정(`mode`, `maxRewrites` 등)으로 동작한다.
-- **모델 이름 설정화**: 특정 모델(`pplx-decider-v1.1-27b` 등)을 코드에 하드코딩하지 않고 `pi-guard.json`의 `decider.model`(및 `decider.provider`)로 설정한다.
+- **모델 이름 설정화**: 특정 모델(`pplx-decider-v1.1-27b` 등)을 코드에 하드코딩하지 않고 `pi-hallucination-guard.json`의 `decider.model`(및 `decider.provider`)로 설정한다.
 - **Pi 내장 `llama.cpp` 연동**: Pi에 기본 포함된 `llama` 익스텐션(`provider: "llama.cpp"`) 및 `ctx.modelRegistry.classify()` API를 사용하여 Decision 모델(`/v1/systemone`)과 일반 로컬 모델(`llama-cpp-classify`) 모두 단일 인터페이스로 호출한다.
 
 ---
@@ -79,7 +79,7 @@ questions: {
 
 ---
 
-## 3. 설정 스키마 (`~/.pi/agent/pi-guard.json`)
+## 3. 설정 스키마 (`~/.pi/agent/pi-hallucination-guard.json`)
 
 기존 설정을 하위 호환성 있게 유지하면서 `decider` 섹션을 추가한다.
 
@@ -169,10 +169,10 @@ src/
 
 ### 4.3 피드백 및 경고 메시지 (`src/index.ts`)
 - **Rewrite 메시지 (`buildDeciderRewriteMessage` / 통합 메시지)**:
-  - `[pi-guard] The answer verifier flagged your last response as likely incorrect (probability: 91% >= 80%).`
-  - `Re-check your claims against the user prompt and tool outputs from this turn, fix any factual errors or unsupported claims, and provide a corrected answer. Do not mention this check.`
+  - `[pi-hallucination-guard] Your last answer was flagged as likely incorrect by the answer verifier (llama.cpp/...: 91% >= 80% threshold).`
+  - `Review your answer against the user prompt and the tool outputs from this turn. Fix any factual errors, logical contradictions, or claims not supported by the evidence. Do not mention this check.`
 - **Warn 메시지 (`buildDeciderWarning`)**:
-  - `pi-guard: answer flagged as potentially incorrect (91%, model: llama.cpp/...)`
+  - `pi-hallucination-guard: answer flagged as potentially incorrect (91%, model: llama.cpp/...)`
 
 ---
 

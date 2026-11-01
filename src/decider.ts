@@ -249,7 +249,7 @@ export function resolveDeciderModel(
 	}
 	return {
 		model: undefined,
-		warning: `multiple classifier models available on "${provider}" (${list.map((m) => m.id).join(", ")}); set decider.model in pi-guard.json`,
+		warning: `multiple classifier models available on "${provider}" (${list.map((m) => m.id).join(", ")}); set decider.model in pi-hallucination-guard.json`,
 	};
 }
 

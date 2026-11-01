@@ -20,7 +20,8 @@ export interface ExtractOptions {
 }
 
 /** Custom message type used by this extension (never whitelisted). */
-export const CUSTOM_TYPE = "pi-guard";
+export const CUSTOM_TYPE = "pi-hallucination-guard";
+export const LEGACY_CUSTOM_TYPE = "pi-guard";
 
 // ---------------------------------------------------------------------------
 // Code masking
@@ -318,14 +319,14 @@ function truncateText(text: string, maxChars: number): string {
 }
 
 function isGuardFeedbackMessage(msg: LooseMessage): boolean {
-	if (msg.customType === CUSTOM_TYPE) return true;
+	if (msg.customType === CUSTOM_TYPE || msg.customType === LEGACY_CUSTOM_TYPE) return true;
 	const text = textOfContent(msg.content).trimStart();
-	return text.startsWith("[pi-guard]");
+	return text.startsWith("[pi-hallucination-guard]") || text.startsWith("[pi-guard]");
 }
 
 /**
  * Extracts the current turn's context leading up to `assistantIdx`:
- * the last real user message before `assistantIdx` (skipping pi-guard rewrite feedback),
+ * the last real user message before `assistantIdx` (skipping pi-hallucination-guard rewrite feedback),
  * any tool results between that user message and `assistantIdx`, and the assistant's final answer text.
  */
 export function extractTurnContext(messages: readonly LooseMessage[], assistantIdx: number): TurnContext {

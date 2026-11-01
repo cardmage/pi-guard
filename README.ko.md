@@ -1,10 +1,10 @@
-# pi-guard
+# pi-hallucination-guard
 
 [English](./README.md) | 한국어
 
-에이전트의 최종 답변에 포함된 모든 URL을 검증하여 환각(hallucinated) 출처 링크나 사실과 다르게 인용된 링크를 잡아내는 [Pi](https://pi.dev) 확장(extension)입니다.
+에이전트의 최종 답변에 포함된 환각(hallucination)과 URL 인용 오류를 검증하고 잡아내는 [Pi](https://pi.dev) 확장(extension)입니다.
 
-LLM은 기억만으로 임의의 URL이 실제로 존재하는지 알 수 없으며, 주소 형태가 그럴듯한지만 추측할 수 있습니다. 따라서 `pi-guard`는 **먼저 HTTP를 통해 URL을 확인**하고, 검증 LLM을 통해 **인용 내용 일치 여부(Content Grounding)**(실제 페이지 본문이 에이전트의 주장을 뒷받침하는지 및 soft-404가 아닌지)와 HTTP만으로 판단할 수 없는 경우(403/429 봇 차단, 5xx 서버 오류, 타임아웃, 네트워크 오류 등)의 **실존 여부 폴백 판정**을 수행합니다.
+LLM은 기억만으로 임의의 URL이 실제로 존재하는지 알 수 없으며, 주소 형태가 그럴듯한지만 추측할 수 있습니다. 따라서 `pi-hallucination-guard`는 **먼저 HTTP를 통해 URL을 확인**하고, 검증 LLM을 통해 **인용 내용 일치 여부(Content Grounding)**(실제 페이지 본문이 에이전트의 주장을 뒷받침하는지 및 soft-404가 아닌지)와 HTTP만으로 판단할 수 없는 경우(403/429 봇 차단, 5xx 서버 오류, 타임아웃, 네트워크 오류 등)의 **실존 여부 폴백 판정**을 수행합니다. 아울러 **Answer Decider**를 통해 로컬 판정/분류 모델로 답변 전반의 환각 및 오류 가능성을 검증합니다.
 
 인용된 URL이 검증에 실패하면(HTTP `404`, `410`, DNS `ENOTFOUND` 또는 검증 모델의 `NOT_EXISTS` / `CONTRADICTED` 판정):
 - **`rewrite`** (기본값): 에이전트에게 피드백 메시지를 전달하여 가짜 링크나 잘못된 주장을 수정해 답변을 다시 작성하도록 요청합니다(사용자 프롬프트당 최대 `maxRewrites`회까지 재시도하며, 초과 시 `warn`으로 강등).
@@ -13,13 +13,13 @@ LLM은 기억만으로 임의의 URL이 실제로 존재하는지 알 수 없으
 ## 설치
 
 ```bash
-pi install npm:pi-guard
+pi install npm:pi-hallucination-guard
 ```
 
 설치하지 않고 단일 세션에서 바로 테스트하려면:
 
 ```bash
-pi -e npm:pi-guard
+pi -e npm:pi-hallucination-guard
 # 또는 로컬 체크아웃 경로에서 실행:
 pi -e ./
 ```
@@ -45,7 +45,7 @@ pi -e ./
 
 ## 설정
 
-`~/.pi/agent/pi-guard.json` (Windows의 경우 `%USERPROFILE%\.pi\agent\pi-guard.json`, `PI_CODING_AGENT_DIR` 환경변수 존중) 파일을 생성합니다. 수정 후에는 Pi에서 `/reload`를 실행하면 반영됩니다. 설정 파일이 없으면 모든 항목에 기본값이 적용됩니다.
+`~/.pi/agent/pi-hallucination-guard.json` (Windows의 경우 `%USERPROFILE%\.pi\agent\pi-hallucination-guard.json`, `PI_CODING_AGENT_DIR` 환경변수 존중; 기존 `pi-guard.json`도 하위 호환 지원) 파일을 생성합니다. 수정 후에는 Pi에서 `/reload`를 실행하면 반영됩니다. 설정 파일이 없으면 모든 항목에 기본값이 적용됩니다.
 
 ```json
 {
@@ -143,7 +143,7 @@ export HTTP_PROXY="http://proxy.corp.com:8080"
 export NO_PROXY="localhost,127.0.0.1,.corp.com"
 ```
 
-또는 `pi-guard.json`에 `"http": { "proxy": "http://proxy.corp.com:8080", "noProxy": [".corp.com"] }`를 직접 지정할 수도 있습니다. 단, `pi-guard.json` 파일은 평문으로 저장되므로 `user:password@` 형태의 자격증명은 설정 파일에 넣지 말고 가급적 환경변수를 사용하는 것을 권장합니다.
+또는 `pi-hallucination-guard.json`에 `"http": { "proxy": "http://proxy.corp.com:8080", "noProxy": [".corp.com"] }`를 직접 지정할 수도 있습니다. 단, `pi-hallucination-guard.json` 파일은 평문으로 저장되므로 `user:password@` 형태의 자격증명은 설정 파일에 넣지 말고 가급적 환경변수를 사용하는 것을 권장합니다.
 
 > **참고 사항**
 > - OS의 자동 프록시 설정(Windows 인터넷 옵션 / macOS 네트워크 설정) 및 PAC/WPAD 스크립트는 자동으로 감지하지 않으므로 환경변수 또는 `http.proxy`에 프록시 주소를 명시해야 합니다.

@@ -1,10 +1,10 @@
-# pi-guard
+# pi-hallucination-guard
 
 English | [한국어](./README.ko.md)
 
-A [Pi](https://pi.dev) extension that checks every URL in the agent's final answer and catches hallucinated or misrepresented citations.
+A [Pi](https://pi.dev) extension that catches hallucinated answers and verifies URLs in the agent's final answer.
 
-LLMs cannot know from memory alone whether an arbitrary URL resolves—they can only judge whether it looks plausible. `pi-guard` therefore **checks URLs over HTTP first** and uses the verifier LLM to check **content grounding** (whether the fetched page actually supports the claim around the URL and is not a soft-404) as well as **existence fallback** when HTTP is inconclusive (403/429 bot blocks, 5xx errors, timeouts, network failures).
+LLMs cannot know from memory alone whether an arbitrary URL resolves—they can only judge whether it looks plausible. `pi-hallucination-guard` therefore **checks URLs over HTTP first** and uses the verifier LLM to check **content grounding** (whether the fetched page actually supports the claim around the URL and is not a soft-404) as well as **existence fallback** when HTTP is inconclusive (403/429 bot blocks, 5xx errors, timeouts, network failures). In addition, it integrates an **Answer Decider** that evaluates the overall answer with a classifier/decision model.
 
 When a cited URL fails verification (`404`, `410`, or `ENOTFOUND` on HTTP, or `NOT_EXISTS` / `CONTRADICTED` from the verifier model):
 - **`rewrite`** (default): appends a feedback message and asks the agent to rewrite the answer without the fabricated link or inaccurate claim (up to `maxRewrites` times per user prompt, then degrades to `warn`).
@@ -13,13 +13,13 @@ When a cited URL fails verification (`404`, `410`, or `ENOTFOUND` on HTTP, or `N
 ## Install
 
 ```bash
-pi install npm:pi-guard
+pi install npm:pi-hallucination-guard
 ```
 
 Try it for a single session without installing:
 
 ```bash
-pi -e npm:pi-guard
+pi -e npm:pi-hallucination-guard
 # or from a local checkout:
 pi -e ./
 ```
@@ -45,7 +45,7 @@ On `agent_before_settle` (when a run finishes with `outcome === "completed"`):
 
 ## Configuration
 
-Create `~/.pi/agent/pi-guard.json` (or `%USERPROFILE%\.pi\agent\pi-guard.json` on Windows; respects `PI_CODING_AGENT_DIR`). Run `/reload` in Pi after editing. If the file is absent, all defaults apply.
+Create `~/.pi/agent/pi-hallucination-guard.json` (or `%USERPROFILE%\.pi\agent\pi-hallucination-guard.json` on Windows; respects `PI_CODING_AGENT_DIR`; also supports legacy `pi-guard.json` for backwards compatibility). Run `/reload` in Pi after editing. If the file is absent, all defaults apply.
 
 ```json
 {
@@ -143,7 +143,7 @@ export HTTP_PROXY="http://proxy.corp.com:8080"
 export NO_PROXY="localhost,127.0.0.1,.corp.com"
 ```
 
-Alternatively, set `"http": { "proxy": "http://proxy.corp.com:8080", "noProxy": [".corp.com"] }` in `pi-guard.json`. Avoid putting `user:password@` in `pi-guard.json` since it is stored in plain text—prefer environment variables when authentication is required.
+Alternatively, set `"http": { "proxy": "http://proxy.corp.com:8080", "noProxy": [".corp.com"] }` in `pi-hallucination-guard.json`. Avoid putting `user:password@` in `pi-hallucination-guard.json` since it is stored in plain text—prefer environment variables when authentication is required.
 
 > **Notes**
 > - OS auto-proxy settings (Windows Internet Options / macOS Network settings) and PAC/WPAD scripts are not read automatically; configure an explicit proxy URL or environment variable.

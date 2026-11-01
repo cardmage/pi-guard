@@ -154,13 +154,13 @@ describe("context message helpers", () => {
 		expect(turn.assistantAnswer).toBe("Final https://final.com/h");
 	});
 
-	it("skips pi-guard rewrite feedback messages when finding the original user prompt and tool results", () => {
+	it("skips pi-hallucination-guard rewrite feedback messages when finding the original user prompt and tool results", () => {
 		const rewriteTurn = [
 			...messages,
 			{
 				role: "user",
-				customType: "pi-guard",
-				content: "[pi-guard] Your last answer was flagged as likely incorrect...",
+				customType: "pi-hallucination-guard",
+				content: "[pi-hallucination-guard] Your last answer was flagged as likely incorrect...",
 			},
 			{
 				role: "assistant",
@@ -177,6 +177,25 @@ describe("context message helpers", () => {
 				content: "Found https://tool-result.com/c",
 			},
 		]);
+		expect(turn.assistantAnswer).toBe("Corrected answer based on tool output.");
+	});
+
+	it("skips legacy pi-guard rewrite feedback messages for backward compatibility", () => {
+		const rewriteTurn = [
+			...messages,
+			{
+				role: "user",
+				customType: "pi-guard",
+				content: "[pi-guard] Your last answer cites URLs that appear not to exist...",
+			},
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "Corrected answer based on tool output." }],
+			},
+		];
+		const idx = lastAssistantIndex(rewriteTurn);
+		const turn = extractTurnContext(rewriteTurn, idx);
+		expect(turn.userPrompt).toBe("Check https://user-given.com/page please");
 		expect(turn.assistantAnswer).toBe("Corrected answer based on tool output.");
 	});
 });

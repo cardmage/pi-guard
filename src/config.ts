@@ -1,5 +1,6 @@
-/** Loads and validates `<agentDir>/pi-guard.json`. */
+/** Loads and validates `<agentDir>/pi-hallucination-guard.json`. */
 
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -7,13 +8,15 @@ import {
 	type HttpConfig,
 	MODES,
 	type PiGuardConfig,
+	type PiHallucinationGuardConfig,
 	THINKING_LEVELS,
 	type VerifierConfig,
 } from "./types.ts";
 
-export const CONFIG_FILE_NAME = "pi-guard.json";
+export const CONFIG_FILE_NAME = "pi-hallucination-guard.json";
+export const LEGACY_CONFIG_FILE_NAME = "pi-guard.json";
 
-export function defaultConfig(): PiGuardConfig {
+export function defaultConfig(): PiHallucinationGuardConfig {
 	return {
 		enabled: true,
 		mode: "rewrite",
@@ -52,7 +55,11 @@ export function defaultConfig(): PiGuardConfig {
 }
 
 export function getConfigPath(agentDir: string): string {
-	return join(agentDir, CONFIG_FILE_NAME);
+	const primary = join(agentDir, CONFIG_FILE_NAME);
+	if (existsSync(primary)) return primary;
+	const legacy = join(agentDir, LEGACY_CONFIG_FILE_NAME);
+	if (existsSync(legacy)) return legacy;
+	return primary;
 }
 
 export interface ConfigLoadResult {
