@@ -1,8 +1,8 @@
 /**
  * pi-hallucination-guard: verifies URLs and detects hallucinated answers in the agent's final answer.
  *
- * HTTP check first (404/410/NXDOMAIN = hallucinated), LLM judgement only for URLs the
- * HTTP check cannot decide. Hallucinated URLs trigger a rewrite request (mode "rewrite",
+ * HTTP check first (404/410/NXDOMAIN = hallucinated), LLM judgement for URLs the HTTP check
+ * cannot decide (and, with `verifyContent`, for pages that returned 200 to check they support the claim). Hallucinated URLs trigger a rewrite request (mode "rewrite",
  * up to maxRewrites per user prompt) or a warning (mode "warn").
  */
 
@@ -10,7 +10,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { matchesKey } from "@earendil-works/pi-tui";
 import { defaultConfig, getConfigPath, loadConfig } from "./config.ts";
-import { evaluateWithDecider, resolveDeciderModel } from "./decider.ts";
+import { evaluateWithDecider, flaggedRisks, formatPercent, resolveDeciderModel } from "./decider.ts";
 import { closeDispatcher, createDispatcher, type DispatcherBuild } from "./dispatcher.ts";
 import {
 	assistantText,
@@ -67,9 +67,18 @@ function describeHttp(r: HttpCheckResult | undefined): string {
 	return r.error ?? r.verdict;
 }
 
+/**
+ * Reasons can carry text derived from web pages or model output. Collapse them to a single short
+ * line without markup so they cannot smuggle instructions into the feedback sent to the agent.
+ */
+export function sanitizeReason(reason: string, maxChars = 200): string {
+	const flat = reason.replace(/[\p{Cc}\u2028\u2029]+/gu, " ").replace(/[<>`]/g, "'").replace(/\s+/g, " ").trim();
+	return flat.length > maxChars ? `${flat.slice(0, maxChars)}…` : flat;
+}
+
 /** Feedback sent to the agent when hallucinated or unsupported URLs are found. */
 export function buildRewriteMessage(failed: readonly UrlFinding[]): string {
-	const lines = failed.map((f) => `- ${f.url} — ${f.reason}`);
+	const lines = failed.map((f) => `- ${f.url} — ${sanitizeReason(f.reason)}`);
 	return [
 		"[pi-hallucination-guard] Your last answer cites URLs that appear not to exist or do not support the cited claim:",
 		...lines,
@@ -86,14 +95,11 @@ export function buildWarning(failed: readonly UrlFinding[]): string {
 
 /** Feedback sent to the agent when the decider model flags the answer as wrong. */
 export function buildDeciderRewriteMessage(finding: DeciderFinding): string {
-	const pct = Math.round(finding.probability * 100);
-	const thr = Math.round(finding.threshold * 100);
-	const flaggedDims = (finding.breakdown ?? [])
-		.filter((b) => b.risk >= 0.5)
-		.sort((a, b) => b.risk - a.risk)
-		.map((b) => `- ${b.id}: ${Math.round(b.risk * 100)}% risk`);
+	const pct = formatPercent(finding.probability);
+	const thr = formatPercent(finding.threshold);
+	const flaggedDims = flaggedRisks(finding.breakdown).map((b) => `- ${b.id}: ${formatPercent(b.risk)} risk`);
 	return [
-		`[pi-hallucination-guard] Your last answer was flagged as likely incorrect by the answer verifier (${finding.provider}/${finding.model}: ${pct}% >= ${thr}% threshold).`,
+		`[pi-hallucination-guard] Your last answer was flagged as likely incorrect by the answer verifier (${finding.provider}/${finding.model}: ${pct} >= ${thr} threshold).`,
 		...(flaggedDims.length > 0 ? ["", "Flagged dimensions:", ...flaggedDims] : []),
 		"",
 		"Review your answer against the user prompt and the tool outputs from this turn. Fix any factual errors, logical contradictions, or claims not supported by the evidence. Do not mention this check.",
@@ -102,14 +108,11 @@ export function buildDeciderRewriteMessage(finding: DeciderFinding): string {
 
 /** Warning shown to the user when the decider model flags the answer as wrong. */
 export function buildDeciderWarning(finding: DeciderFinding): string {
-	const pct = Math.round(finding.probability * 100);
-	const thr = Math.round(finding.threshold * 100);
-	const topRisks = (finding.breakdown ?? [])
-		.filter((b) => b.risk >= 0.5)
-		.sort((a, b) => b.risk - a.risk)
-		.map((b) => `${b.id}=${Math.round(b.risk * 100)}%`);
+	const pct = formatPercent(finding.probability);
+	const thr = formatPercent(finding.threshold);
+	const topRisks = flaggedRisks(finding.breakdown).map((b) => `${b.id}=${formatPercent(b.risk)}`);
 	const detailSuffix = topRisks.length > 0 ? ` [${topRisks.join(", ")}]` : "";
-	return `pi-hallucination-guard: answer flagged as potentially incorrect (${pct}% >= ${thr}%, model: ${finding.provider}/${finding.model})${detailSuffix}`;
+	return `pi-hallucination-guard: answer flagged as potentially incorrect (${pct} >= ${thr}, model: ${finding.provider}/${finding.model})${detailSuffix}`;
 }
 
 export default function piHallucinationGuard(pi: ExtensionAPI): void {
@@ -148,7 +151,7 @@ export default function piHallucinationGuard(pi: ExtensionAPI): void {
 		}
 		if (state.config.enabled && state.config.http.enabled) {
 			try {
-				state.net = createDispatcher(state.config.http);
+				state.net = createDispatcher(state.config.http, { blockPrivateAddresses: true });
 				for (const w of state.net.warnings) notify(ctx, `pi-hallucination-guard: ${w}`, "warning");
 			} catch (err) {
 				notify(ctx, `pi-hallucination-guard: cannot create HTTP client (${err instanceof Error ? err.message : String(err)}); using LLM-only checks`, "warning");
@@ -212,6 +215,7 @@ export default function piHallucinationGuard(pi: ExtensionAPI): void {
 						signal,
 						proxyConfigured: state.net.proxyConfigured,
 						fetchContent: cfg.verifyContent,
+						blockPrivateRedirects: true,
 					},
 				);
 			} else {
@@ -297,8 +301,9 @@ export default function piHallucinationGuard(pi: ExtensionAPI): void {
 					reason: `verifier: ${llm.reason || llm.verdict}${httpPart ? ` (${httpPart})` : ""}`,
 				};
 				findings.set(p.key, f);
-				// Cache existence verdicts (when no pageContent was checked) if decisive.
-				if (llm.verdict !== "UNKNOWN" && !http.pageContent) state.cache.set(p.key, f);
+				// Cache only passing verdicts. A failure judged from an inconclusive HTTP signal (5xx, bot block,
+				// timeout) may be transient or a model misjudgement, so it is re-evaluated on the next turn.
+				if (llm.verdict !== "UNKNOWN" && !failed && !http.pageContent) state.cache.set(p.key, f);
 			}
 		}
 		return candidates.map((c) => findings.get(c.key)).filter((f): f is UrlFinding => !!f);

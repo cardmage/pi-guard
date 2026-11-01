@@ -37,6 +37,10 @@ export async function startTargetServer(): Promise<TargetServer> {
 				return send(301, { location: "/ok" });
 			case "/redirect-missing":
 				return send(302, { location: "/missing" });
+			case "/redirect-private":
+				return send(302, { location: "http://169.254.169.254/latest/meta-data" });
+			case "/redirect-loop":
+				return send(302, { location: "/redirect-loop" });
 			case "/missing":
 				return send(404);
 			case "/gone":

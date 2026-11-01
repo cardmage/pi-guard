@@ -65,6 +65,12 @@ describe("buildDeciderContext & context-adaptive question sets (Idea 4)", () => 
 			},
 			{ instructions: null },
 		);
+		expect(ctx.state).not.toHaveProperty("note");
+		const truncated = buildDeciderContext(
+			{ userPrompt: "p", toolResults: [], assistantAnswer: "a", truncated: true },
+			{ instructions: null },
+		);
+		expect(String((truncated.state as { note?: string }).note)).toMatch(/truncated/);
 		expect(ctx.state).toEqual({
 			userPrompt: "Did the tests pass?",
 			toolResults: [{ toolName: "bash", isError: true, content: "1 failed" }],

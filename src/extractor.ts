@@ -19,7 +19,7 @@ export interface ExtractOptions {
 	skipCodeBlocks?: boolean;
 }
 
-/** Custom message type used by this extension (never whitelisted). */
+/** Custom message type used by this extension (its own feedback is never treated as a user prompt). */
 export const CUSTOM_TYPE = "pi-hallucination-guard";
 export const LEGACY_CUSTOM_TYPE = "pi-guard";
 
@@ -160,7 +160,7 @@ export function normalizeUrl(raw: string): string | undefined {
 
 /**
  * Comparison key: normalized URL without fragment, without trailing slash in the
- * path, and without a trailing dot in the host. Used for dedupe, whitelist and cache.
+ * path, and without a trailing dot in the host. Used for dedupe and caching.
  */
 export function canonicalKey(url: string): string {
 	let u: URL;
@@ -305,6 +305,8 @@ export interface TurnContext {
 	userPrompt: string;
 	toolResults: TurnToolResult[];
 	assistantAnswer: string;
+	/** True when the prompt, tool results, or answer were cut or dropped to fit the size limits. */
+	truncated?: boolean;
 }
 
 const MAX_USER_PROMPT_CHARS = 4_000;
@@ -316,6 +318,10 @@ function truncateText(text: string, maxChars: number): string {
 	const trimmed = text.trim();
 	if (trimmed.length <= maxChars) return trimmed;
 	return `${trimmed.slice(0, maxChars)}…`;
+}
+
+function isTruncated(text: string, maxChars: number): boolean {
+	return text.trim().length > maxChars;
 }
 
 function isGuardFeedbackMessage(msg: LooseMessage): boolean {
@@ -330,7 +336,9 @@ function isGuardFeedbackMessage(msg: LooseMessage): boolean {
  * any tool results between that user message and `assistantIdx`, and the assistant's final answer text.
  */
 export function extractTurnContext(messages: readonly LooseMessage[], assistantIdx: number): TurnContext {
-	const answer = truncateText(assistantText(messages[assistantIdx]), MAX_ASSISTANT_ANSWER_CHARS);
+	const rawAnswer = assistantText(messages[assistantIdx]);
+	let truncated = isTruncated(rawAnswer, MAX_ASSISTANT_ANSWER_CHARS);
+	const answer = truncateText(rawAnswer, MAX_ASSISTANT_ANSWER_CHARS);
 	let userIdx = -1;
 	for (let i = assistantIdx - 1; i >= 0; i--) {
 		const msg = messages[i];
@@ -340,7 +348,9 @@ export function extractTurnContext(messages: readonly LooseMessage[], assistantI
 		}
 	}
 
-	const userPrompt = userIdx >= 0 ? truncateText(textOfContent(messages[userIdx]?.content), MAX_USER_PROMPT_CHARS) : "";
+	const rawPrompt = userIdx >= 0 ? textOfContent(messages[userIdx]?.content) : "";
+	if (isTruncated(rawPrompt, MAX_USER_PROMPT_CHARS)) truncated = true;
+	const userPrompt = truncateText(rawPrompt, MAX_USER_PROMPT_CHARS);
 	const toolResults: TurnToolResult[] = [];
 	const startIdx = userIdx >= 0 ? userIdx + 1 : 0;
 	let totalToolChars = 0;
@@ -349,9 +359,14 @@ export function extractTurnContext(messages: readonly LooseMessage[], assistantI
 		const msg = messages[i];
 		if (!msg || msg.role !== "toolResult") continue;
 		const remaining = MAX_TOTAL_TOOL_CHARS - totalToolChars;
-		if (remaining <= 0) break;
 		const rawContent = textOfContent(msg.content);
-		const content = truncateText(rawContent, Math.min(MAX_TOOL_RESULT_CHARS, remaining));
+		if (remaining <= 0) {
+			if (rawContent.trim()) truncated = true;
+			continue;
+		}
+		const limit = Math.min(MAX_TOOL_RESULT_CHARS, remaining);
+		if (isTruncated(rawContent, limit)) truncated = true;
+		const content = truncateText(rawContent, limit);
 		if (!content) continue;
 		totalToolChars += content.length;
 		const toolName = typeof msg.toolName === "string" && msg.toolName.trim() ? msg.toolName.trim() : "tool";
@@ -367,5 +382,6 @@ export function extractTurnContext(messages: readonly LooseMessage[], assistantI
 		userPrompt,
 		toolResults,
 		assistantAnswer: answer,
+		...(truncated ? { truncated } : {}),
 	};
 }

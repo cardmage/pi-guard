@@ -67,7 +67,7 @@ export type PiGuardConfig = PiHallucinationGuardConfig;
 export type HttpVerdict = "OK" | "NOT_FOUND" | "UNCERTAIN";
 
 /** Coarse error category, used for diagnostics and the one-time proxy/TLS warning. */
-export type HttpErrorKind = "dns" | "timeout" | "tls" | "proxy" | "network" | "aborted" | "disabled";
+export type HttpErrorKind = "dns" | "timeout" | "tls" | "proxy" | "network" | "aborted" | "disabled" | "blocked";
 
 export interface HttpCheckResult {
 	url: string;

@@ -1,7 +1,9 @@
 /** Builds the undici dispatcher (proxy + CA trust) used by the HTTP checker. */
 
+import * as dns from "node:dns";
 import * as tls from "node:tls";
 import { Agent, type Dispatcher, EnvHttpProxyAgent } from "undici";
+import { isPrivateOrLocal } from "./filter.ts";
 import type { HttpConfig } from "./types.ts";
 
 const PROXY_PROTOCOLS = new Set(["http:", "https:", "socks5:", "socks:"]);
@@ -81,6 +83,29 @@ export interface CreateDispatcherOptions {
 	env?: NodeJS.ProcessEnv;
 	/** Override CA list (tests). */
 	ca?: string[];
+	/**
+	 * Refuse connections whose resolved address is private/local (DNS-rebinding / internal-name SSRF).
+	 * Only applied to direct connections: with a proxy, name resolution happens on the proxy.
+	 */
+	blockPrivateAddresses?: boolean;
+}
+
+type LookupCallback = (err: NodeJS.ErrnoException | null, address: string | dns.LookupAddress[], family?: number) => void;
+
+/** `dns.lookup` replacement that rejects private/local results. */
+function guardedLookup(hostname: string, options: dns.LookupOptions, callback: LookupCallback): void {
+	dns.lookup(hostname, options, (err: NodeJS.ErrnoException | null, address: string | dns.LookupAddress[], family?: number) => {
+		if (err) return callback(err, address, family);
+		const addresses = Array.isArray(address) ? address.map((a) => a.address) : [address];
+		const bad = addresses.find((a) => isPrivateOrLocal(a));
+		if (bad) {
+			const blocked = new Error(`${hostname} resolves to private/local address ${bad}; blocked`) as NodeJS.ErrnoException;
+			blocked.name = "BlockedAddressError";
+			blocked.code = "EBLOCKED";
+			return callback(blocked, [], undefined);
+		}
+		callback(null, address, family);
+	});
 }
 
 /** Creates the dispatcher for the given HTTP config. Never throws for config errors. */
@@ -90,6 +115,7 @@ export function createDispatcher(http: HttpConfig, options: CreateDispatcherOpti
 	const ca = options.ca ?? (http.useSystemCa ? getCaCertificates() : undefined);
 
 	const tlsOpts = ca ? { ca } : {};
+	const directGuard = options.blockPrivateAddresses ? { lookup: guardedLookup } : {};
 	const agentOpts = {
 		connect: { ...tlsOpts },
 		requestTls: { ...tlsOpts },
@@ -107,7 +133,7 @@ export function createDispatcher(http: HttpConfig, options: CreateDispatcherOpti
 
 	if (proxy === "none") {
 		return {
-			dispatcher: new Agent({ connect: agentOpts.connect }),
+			dispatcher: new Agent({ connect: { ...agentOpts.connect, ...directGuard } }),
 			mode: "none",
 			description: "direct (proxy: none)",
 			proxyConfigured: false,
@@ -118,7 +144,7 @@ export function createDispatcher(http: HttpConfig, options: CreateDispatcherOpti
 	if (proxy === "env") {
 		const fromEnv = envProxy(env);
 		return {
-			dispatcher: new EnvHttpProxyAgent(agentOpts),
+			dispatcher: new EnvHttpProxyAgent(fromEnv ? agentOpts : { ...agentOpts, connect: { ...agentOpts.connect, ...directGuard } }),
 			mode: "env",
 			description: fromEnv ? `env proxy ${maskProxyUrl(fromEnv)}` : "direct (no proxy env vars)",
 			proxyConfigured: !!fromEnv,

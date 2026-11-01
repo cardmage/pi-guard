@@ -49,6 +49,22 @@ describe("checkUrl against a local server", () => {
 		});
 	}
 
+	it("blocks redirects to private hosts only when asked to", async () => {
+		const blocked = await checkUrl(`${server.url}/redirect-private`, { ...opts(), blockPrivateRedirects: true });
+		expect(blocked).toMatchObject({ verdict: "UNCERTAIN", errorKind: "blocked" });
+		expect(blocked.error).toMatch(/169.254.169.254/);
+		// Without the guard the redirect target is attempted (and fails to connect), never reported as OK.
+		const open = await checkUrl(`${server.url}/redirect-private`, { ...opts(), timeoutMs: 500 });
+		expect(open.verdict).not.toBe("OK");
+		expect(open.errorKind).not.toBe("blocked");
+	});
+
+	it("gives up on redirect loops", async () => {
+		const r = await checkUrl(`${server.url}/redirect-loop`, opts());
+		expect(r).toMatchObject({ verdict: "UNCERTAIN", errorKind: "blocked" });
+		expect(r.error).toMatch(/too many redirects/);
+	});
+
 	it("falls back to GET when HEAD returns 405 or 501", async () => {
 		for (const path of ["/head405", "/head501"]) {
 			server.hits.length = 0;
@@ -142,6 +158,13 @@ describe("checkUrl against a local server", () => {
 
 describe("classifyError", () => {
 	const wrap = (cause: object) => Object.assign(new TypeError("fetch failed"), { cause });
+
+	it("does not mistake a hostname containing \"proxy\" for a proxy failure", () => {
+		const r = classifyError(new TypeError("fetch failed", { cause: new Error("connect ECONNREFUSED proxy.example.org:443") }), "proxy.example.org");
+		expect(r.kind).toBe("network");
+		const p = classifyError(new TypeError("fetch failed", { cause: new Error("Proxy response (403) !== 200 when HTTP Tunneling") }), "x.com");
+		expect(p.kind).toBe("proxy");
+	});
 
 	it("ENOTFOUND for the target host → NOT_FOUND", () => {
 		expect(classifyError(wrap({ code: "ENOTFOUND", hostname: "x.com", message: "getaddrinfo ENOTFOUND x.com" }), "x.com").verdict).toBe("NOT_FOUND");

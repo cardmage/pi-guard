@@ -15,7 +15,7 @@ function ipv4Octets(h: string): number[] | undefined {
 }
 
 function isPrivateIpv4(o: number[]): boolean {
-	const [a, b] = o as [number, number];
+	const [a, b, c] = o as [number, number, number, number];
 	return (
 		a === 0 || // 0.0.0.0/8 "this network"
 		a === 10 ||
@@ -23,28 +23,55 @@ function isPrivateIpv4(o: number[]): boolean {
 		(a === 169 && b === 254) || // link-local
 		(a === 172 && b >= 16 && b <= 31) ||
 		(a === 192 && b === 168) ||
-		(a === 100 && b >= 64 && b <= 127) // CGNAT 100.64.0.0/10
+		(a === 192 && b === 0 && (c === 0 || c === 2)) || // 192.0.0.0/24 IETF, 192.0.2.0/24 TEST-NET-1
+		(a === 198 && (b === 18 || b === 19)) || // 198.18.0.0/15 benchmarking
+		(a === 198 && b === 51 && c === 100) || // TEST-NET-2
+		(a === 203 && b === 0 && c === 113) || // TEST-NET-3
+		(a === 100 && b >= 64 && b <= 127) || // CGNAT 100.64.0.0/10
+		a >= 224 // multicast, reserved, broadcast
 	);
 }
 
+/** Expands an IPv6 literal (optionally with a dotted IPv4 tail) into 8 numeric groups. */
+function expandIpv6(h: string): number[] | undefined {
+	let text = h;
+	const tail = /(\d+\.\d+\.\d+\.\d+)$/.exec(text);
+	if (tail) {
+		const o = ipv4Octets(tail[1]!);
+		if (!o) return undefined;
+		text = text.slice(0, tail.index) + ((o[0]! << 8) | o[1]!).toString(16) + ":" + ((o[2]! << 8) | o[3]!).toString(16);
+	}
+	const halves = text.split("::");
+	if (halves.length > 2) return undefined;
+	const parse = (part: string) => (part ? part.split(":").map((g) => Number.parseInt(g, 16)) : []);
+	const head = parse(halves[0]!);
+	const rest = halves.length === 2 ? parse(halves[1]!) : [];
+	const missing = 8 - head.length - rest.length;
+	if (halves.length === 1 ? head.length !== 8 : missing < 0) return undefined;
+	const groups = [...head, ...new Array<number>(halves.length === 2 ? missing : 0).fill(0), ...rest];
+	return groups.length === 8 && groups.every((g) => Number.isInteger(g) && g >= 0 && g <= 0xffff) ? groups : undefined;
+}
+
+function v4FromGroups(hi: number, lo: number): number[] {
+	return [hi >> 8, hi & 255, lo >> 8, lo & 255];
+}
+
 function isPrivateIpv6(h: string): boolean {
-	if (h === "::1" || h === "::") return true;
-	// IPv4-mapped (::ffff:a.b.c.d or ::ffff:7f00:1)
-	const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(h);
-	if (mapped) {
-		const o = ipv4Octets(mapped[1]!);
-		return o ? isPrivateIpv4(o) : false;
+	const g = expandIpv6(h);
+	if (!g) return true; // unparseable literal: never fetch
+	const [g0, g1, g2, g3, g4, g5, g6, g7] = g as [number, number, number, number, number, number, number, number];
+	const zeroPrefix = g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0;
+	if (zeroPrefix && g5 === 0 && g6 === 0 && (g7 === 0 || g7 === 1)) return true; // :: and ::1
+	if (zeroPrefix && (g5 === 0xffff || g5 === 0)) return isPrivateIpv4(v4FromGroups(g6, g7)); // IPv4-mapped / -compatible
+	if (g0 === 0x64 && g1 === 0xff9b && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0) {
+		return isPrivateIpv4(v4FromGroups(g6, g7)); // NAT64 64:ff9b::/96
 	}
-	const mappedHex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(h);
-	if (mappedHex) {
-		const hi = Number.parseInt(mappedHex[1]!, 16);
-		const lo = Number.parseInt(mappedHex[2]!, 16);
-		return isPrivateIpv4([hi >> 8, hi & 255, lo >> 8, lo & 255]);
-	}
-	const first = Number.parseInt(h.split(":")[0] || "0", 16);
+	if (g0 === 0x2002) return isPrivateIpv4(v4FromGroups(g1, g2)); // 6to4 embeds an IPv4 address
 	return (
-		(first & 0xfe00) === 0xfc00 || // fc00::/7 unique local
-		(first & 0xffc0) === 0xfe80 // fe80::/10 link-local
+		(g0 & 0xfe00) === 0xfc00 || // fc00::/7 unique local
+		(g0 & 0xffc0) === 0xfe80 || // fe80::/10 link-local
+		(g0 & 0xff00) === 0xff00 || // ff00::/8 multicast
+		(g0 === 0x2001 && g1 === 0x0db8) // documentation
 	);
 }
 

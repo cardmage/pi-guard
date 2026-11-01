@@ -2,6 +2,7 @@
 
 import { type Dispatcher, fetch } from "undici";
 import { maskCredentialsInText } from "./dispatcher.ts";
+import { isPrivateOrLocal } from "./filter.ts";
 import type { HttpCheckResult, HttpErrorKind, HttpVerdict } from "./types.ts";
 
 export const DEFAULT_USER_AGENT =
@@ -20,6 +21,17 @@ export interface HttpCheckOptions {
 	proxyConfigured?: boolean;
 	/** When true, fetches up to 64 KB of textual body on 2xx responses and extracts readable text. */
 	fetchContent?: boolean;
+	/** Refuse redirects to private/local hosts (the initial URL is expected to be vetted by the caller). */
+	blockPrivateRedirects?: boolean;
+}
+
+const MAX_REDIRECTS = 10;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+function blockedError(message: string): Error {
+	const err = new Error(message);
+	err.name = "BlockedRedirectError";
+	return err;
 }
 
 /** Strips HTML tags, scripts, styles, and collapses whitespace into a compact readable snippet. */
@@ -113,6 +125,11 @@ function walkError(err: unknown): ErrorInfo {
 	return info;
 }
 
+/** Matches the standalone word "proxy", ignoring hostnames/URLs such as `proxy.example.com`. */
+function mentionsProxy(message: string): boolean {
+	return /(?<![\w.-])proxy(?![\w.-])/i.test(message.replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, " "));
+}
+
 /**
  * Maps a fetch error to a verdict.
  * - `ENOTFOUND` for the target host → NOT_FOUND (the domain does not exist)
@@ -129,8 +146,11 @@ export function classifyError(
 	);
 	const has = (set: Set<string>) => info.codes.some((c) => set.has(c));
 
+	if (info.names.includes("BlockedRedirectError") || info.names.includes("BlockedAddressError")) {
+		return { verdict: "UNCERTAIN", kind: "blocked", error: message };
+	}
 	// Before the abort check: undici reports failed CONNECT tunnels as RequestAbortedError (name "AbortError").
-	if (info.messages.some((m) => /proxy/i.test(m)) || info.codes.includes("UND_ERR_PRX_TLS")) {
+	if (info.messages.some(mentionsProxy) || info.codes.includes("UND_ERR_PRX_TLS")) {
 		return { verdict: "UNCERTAIN", kind: "proxy", error: message };
 	}
 	if (info.names.includes("AbortError") || info.names.includes("TimeoutError") || has(TIMEOUT_CODES)) {
@@ -182,6 +202,41 @@ function isTextualContentType(ct: string): boolean {
 	return /text\/|application\/(json|xml|xhtml\+xml|javascript)|\+json|\+xml/i.test(ct);
 }
 
+/** Follows redirects manually so every hop can be vetted against private/local hosts. */
+async function fetchFollowingRedirects(url: string, method: "HEAD" | "GET", opts: HttpCheckOptions, signal: AbortSignal) {
+	let current = url;
+	for (let hop = 0; ; hop++) {
+		const res = await fetch(current, {
+			method,
+			redirect: "manual",
+			signal,
+			dispatcher: opts.dispatcher,
+			headers: {
+				"user-agent": opts.userAgent || DEFAULT_USER_AGENT,
+				accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+				"accept-language": "en-US,en;q=0.9",
+			},
+		});
+		const location = REDIRECT_STATUSES.has(res.status) ? res.headers.get("location") : null;
+		if (!location) return res;
+		res.body?.cancel().catch(() => {});
+		if (hop >= MAX_REDIRECTS) throw blockedError(`too many redirects (>${MAX_REDIRECTS})`);
+		let next: URL;
+		try {
+			next = new URL(location, current);
+		} catch {
+			return res;
+		}
+		if (next.protocol !== "http:" && next.protocol !== "https:") {
+			throw blockedError(`redirect to unsupported protocol ${next.protocol}`);
+		}
+		if (opts.blockPrivateRedirects && isPrivateOrLocal(next.hostname)) {
+			throw blockedError(`redirect to private/local host blocked (${next.hostname})`);
+		}
+		current = next.href;
+	}
+}
+
 async function request(
 	url: string,
 	method: "HEAD" | "GET",
@@ -194,17 +249,7 @@ async function request(
 	if (signal.aborted) controller.abort(signal.reason);
 	else signal.addEventListener("abort", onAbort, { once: true });
 	try {
-		const res = await fetch(url, {
-			method,
-			redirect: "follow",
-			signal: controller.signal,
-			dispatcher: opts.dispatcher,
-			headers: {
-				"user-agent": opts.userAgent || DEFAULT_USER_AGENT,
-				accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-				"accept-language": "en-US,en;q=0.9",
-			},
-		});
+		const res = await fetchFollowingRedirects(url, method, opts, controller.signal);
 		let pageContent: string | undefined;
 		const contentType = res.headers.get("content-type") ?? "";
 		if (readBody && method === "GET" && res.status >= 200 && res.status < 300 && res.body && isTextualContentType(contentType)) {

@@ -140,6 +140,26 @@ describe("context message helpers", () => {
 		expect(lastAssistantIndex([{ role: "user", content: "x" }])).toBe(-1);
 	});
 
+	it("flags truncation only when something was cut or dropped", () => {
+		const small = extractTurnContext(
+			[
+				{ role: "user", content: "hi" },
+				{ role: "assistant", content: [{ type: "text", text: "hello" }] },
+			],
+			1,
+		);
+		expect(small.truncated).toBeUndefined();
+		const big = extractTurnContext(
+			[
+				{ role: "user", content: "hi" },
+				{ role: "toolResult", toolName: "bash", content: [{ type: "text", text: "x".repeat(5000) }] },
+				{ role: "assistant", content: [{ type: "text", text: "done" }] },
+			],
+			2,
+		);
+		expect(big.truncated).toBe(true);
+	});
+
 	it("extracts turn context from the last user prompt, tool results, and final assistant message", () => {
 		const idx = lastAssistantIndex(messages);
 		const turn = extractTurnContext(messages, idx);

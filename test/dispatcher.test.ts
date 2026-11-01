@@ -92,6 +92,16 @@ describe("createDispatcher", () => {
 		});
 	});
 
+	it("blockPrivateAddresses refuses names that resolve to loopback (direct connections)", async () => {
+		const b = createDispatcher(http({ proxy: "none" }), { blockPrivateAddresses: true });
+		try {
+			const r = await checkUrl(`http://localhost:${target.port}/ok`, { dispatcher: b.dispatcher, timeoutMs: 3000, concurrency: 1 });
+			expect(r).toMatchObject({ verdict: "UNCERTAIN", errorKind: "blocked" });
+		} finally {
+			await closeDispatcher(b.dispatcher);
+		}
+	});
+
 	it("uses system CA certificates when available", async () => {
 		const ca = getCaCertificates();
 		expect(ca === undefined || (Array.isArray(ca) && ca.length > 0)).toBe(true);

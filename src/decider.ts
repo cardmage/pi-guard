@@ -38,6 +38,20 @@ export interface DeciderQuestionSpec {
 	criteria: { true: string; false: string };
 }
 
+/** Prompt-coverage check shared by both question sets. */
+const IGNORES_PROMPT_QUESTION: DeciderQuestionSpec = {
+	id: "ignores_prompt",
+	dimension: "prompt_response",
+	polarity: "negative",
+	weight: 0.125,
+	instructions:
+		"Does `assistantAnswer` ignore, omit, or fail to answer an explicit question or core request in `userPrompt`?",
+	criteria: {
+		true: "The user prompt contains a specific question or request, and the answer misses, ignores, or fails to address it.",
+		false: "The answer appropriately responds to the user prompt (including casual conversation or greetings where no specific task was requested).",
+	},
+};
+
 /** Orthogonal + dimension-paired bidirectional questions when `toolResults` are present in the turn. */
 export const TOOL_TURN_QUESTIONS: readonly DeciderQuestionSpec[] = [
 	{
@@ -75,18 +89,7 @@ export const TOOL_TURN_QUESTIONS: readonly DeciderQuestionSpec[] = [
 			false: "The answer misrepresents, ignores, or distorts the evidence.",
 		},
 	},
-	{
-		id: "ignores_prompt",
-		dimension: "prompt_response",
-		polarity: "negative",
-		weight: 0.125,
-		instructions:
-			"Does `assistantAnswer` ignore, omit, or fail to answer an explicit question or core request in `userPrompt`?",
-		criteria: {
-			true: "The user prompt contains a specific question or request, and the answer misses, ignores, or fails to address it.",
-			false: "The answer appropriately responds to the user prompt (including casual conversation or greetings where no specific task was requested).",
-		},
-	},
+	IGNORES_PROMPT_QUESTION,
 	{
 		id: "addresses_prompt",
 		dimension: "prompt_response",
@@ -137,18 +140,7 @@ export const NO_TOOL_TURN_QUESTIONS: readonly DeciderQuestionSpec[] = [
 			false: "The answer is inaccurate, misleading, or logically flawed.",
 		},
 	},
-	{
-		id: "ignores_prompt",
-		dimension: "prompt_response",
-		polarity: "negative",
-		weight: 0.125,
-		instructions:
-			"Does `assistantAnswer` ignore, omit, or fail to answer an explicit question or core request in `userPrompt`?",
-		criteria: {
-			true: "The user prompt contains a specific question or request, and the answer misses, ignores, or fails to address it.",
-			false: "The answer appropriately responds to the user prompt (including casual conversation or greetings where no specific task was requested).",
-		},
-	},
+	IGNORES_PROMPT_QUESTION,
 	{
 		id: "addresses_prompt",
 		dimension: "prompt_response",
@@ -271,6 +263,11 @@ export function buildDeciderContext(
 				}
 			: {}),
 		assistantAnswer: turn.assistantAnswer,
+		...(turn.truncated
+			? {
+					note: "Some inputs were truncated and earlier conversation turns are not shown. Missing support for a claim is not by itself evidence of fabrication; flag only claims that are clearly unsupported or contradicted by what is shown.",
+				}
+			: {}),
 	};
 	const questions: Record<string, ClassifierQuestion> = {};
 	for (const spec of specs) {
@@ -314,6 +311,77 @@ function groupTriggeredRisk(items: readonly DeciderDimensionScore[]): {
 		triggeredWeight: triggered.length > 0 ? weightSum : 0,
 		triggeredWeightedSum: triggered.length > 0 ? riskSum : 0,
 	};
+}
+
+interface EvaluatedDimension {
+	weight: number;
+	risk: number;
+	confirmed: boolean;
+	confirmedWeight: number;
+	confirmedWeightedSum: number;
+}
+
+function groupByDimension(breakdown: readonly DeciderDimensionScore[]): Map<string, DeciderDimensionScore[]> {
+	const byDimension = new Map<string, DeciderDimensionScore[]>();
+	for (const item of breakdown) {
+		const key = item.dimension ?? item.id;
+		const group = byDimension.get(key);
+		if (group) group.push(item);
+		else byDimension.set(key, [item]);
+	}
+	return byDimension;
+}
+
+/** Scores one defect dimension: confirms flaws, dampens polarity disagreement, or averages. */
+function evaluateDimension(items: readonly DeciderDimensionScore[]): EvaluatedDimension | undefined {
+	const weight = items.reduce((sum, i) => sum + i.weight, 0);
+	if (weight <= 0) return undefined;
+	const negItems = items.filter((i) => i.polarity === "negative");
+	const posItems = items.filter((i) => i.polarity === "positive");
+
+	let risk = items.reduce((sum, i) => sum + i.weight * i.risk, 0) / weight;
+	let confirmed = false;
+	let confirmedWeight = 0;
+	let confirmedWeightedSum = 0;
+
+	if (negItems.length > 0 && posItems.length > 0) {
+		const neg = groupTriggeredRisk(negItems);
+		const pos = groupTriggeredRisk(posItems);
+		if (neg.risk >= 0.5 && pos.risk >= 0.5) {
+			// Both polarities within this defect dimension confirm a flaw.
+			confirmedWeight = neg.triggeredWeight + pos.triggeredWeight;
+			confirmedWeightedSum = neg.triggeredWeightedSum + pos.triggeredWeightedSum;
+			if (confirmedWeight > 0) {
+				risk = confirmedWeightedSum / confirmedWeight;
+				confirmed = true;
+			}
+		} else if (neg.risk >= 0.5 || pos.risk >= 0.5) {
+			// Polarity disagreement (e.g. Yes/No bias or a positive question misfiring on casual chat).
+			risk *= 1 - 0.5 * Math.abs(neg.risk - pos.risk);
+		}
+	} else {
+		const single = groupTriggeredRisk(items);
+		if (single.triggeredWeight > 0) {
+			risk = single.risk;
+			confirmed = true;
+			confirmedWeight = single.triggeredWeight;
+			confirmedWeightedSum = single.triggeredWeightedSum;
+		}
+	}
+	return { weight, risk, confirmed, confirmedWeight, confirmedWeightedSum };
+}
+
+/** Confirmed flaw dimensions alone decide the score; otherwise all dimensions are averaged by weight. */
+function composeDimensions(dims: readonly EvaluatedDimension[]): number {
+	const confirmed = dims.filter((d) => d.confirmed);
+	if (confirmed.length > 0) {
+		const weight = confirmed.reduce((sum, d) => sum + d.confirmedWeight, 0);
+		const sum = confirmed.reduce((acc, d) => acc + d.confirmedWeightedSum, 0);
+		return weight > 0 ? sum / weight : 0;
+	}
+	const totalWeight = dims.reduce((sum, d) => sum + d.weight, 0);
+	const weightedSum = dims.reduce((sum, d) => sum + d.weight * d.risk, 0);
+	return totalWeight > 0 ? weightedSum / totalWeight : 0;
 }
 
 /**
@@ -376,102 +444,12 @@ export function aggregateDeciderScores(
 		return undefined;
 	}
 
-	const byDimension = new Map<string, DeciderDimensionScore[]>();
-	for (const item of breakdown) {
-		const dimKey = item.dimension ?? item.id;
-		const group = byDimension.get(dimKey);
-		if (group) group.push(item);
-		else byDimension.set(dimKey, [item]);
-	}
-
-	interface EvaluatedDimension {
-		weight: number;
-		risk: number;
-		confirmed: boolean;
-		confirmedWeight: number;
-		confirmedWeightedSum: number;
-	}
-
-	const evaluatedDims: EvaluatedDimension[] = [];
-	for (const items of byDimension.values()) {
-		let dimWeight = 0;
-		let dimWeightedSum = 0;
-		const negItems: DeciderDimensionScore[] = [];
-		const posItems: DeciderDimensionScore[] = [];
-
-		for (const item of items) {
-			dimWeight += item.weight;
-			dimWeightedSum += item.weight * item.risk;
-			if (item.polarity === "negative") {
-				negItems.push(item);
-			} else {
-				posItems.push(item);
-			}
-		}
-		if (dimWeight <= 0) continue;
-
-		let dimRisk = dimWeightedSum / dimWeight;
-		let confirmed = false;
-		let confirmedWeight = 0;
-		let confirmedWeightedSum = 0;
-
-		if (negItems.length > 0 && posItems.length > 0) {
-			const neg = groupTriggeredRisk(negItems);
-			const pos = groupTriggeredRisk(posItems);
-			if (neg.risk >= 0.5 && pos.risk >= 0.5) {
-				// Both polarities within this defect dimension confirm a flaw.
-				confirmedWeight = neg.triggeredWeight + pos.triggeredWeight;
-				confirmedWeightedSum = neg.triggeredWeightedSum + pos.triggeredWeightedSum;
-				if (confirmedWeight > 0) {
-					dimRisk = confirmedWeightedSum / confirmedWeight;
-					confirmed = true;
-				}
-			} else if (neg.risk >= 0.5 || pos.risk >= 0.5) {
-				// Polarity disagreement within the same defect dimension (e.g. Yes/No bias or
-				// positive question misfiring on casual chat when negative flaw risk is < 0.5).
-				const disagreement = Math.abs(neg.risk - pos.risk);
-				dimRisk *= 1 - 0.5 * disagreement;
-			}
-		} else {
-			const single = groupTriggeredRisk(items);
-			if (single.triggeredWeight > 0) {
-				dimRisk = single.risk;
-				confirmed = true;
-				confirmedWeight = single.triggeredWeight;
-				confirmedWeightedSum = single.triggeredWeightedSum;
-			}
-		}
-
-		evaluatedDims.push({
-			weight: dimWeight,
-			risk: dimRisk,
-			confirmed,
-			confirmedWeight,
-			confirmedWeightedSum,
-		});
-	}
-
+	const evaluatedDims = [...groupByDimension(breakdown).values()]
+		.map(evaluateDimension)
+		.filter((d): d is EvaluatedDimension => d !== undefined);
 	if (evaluatedDims.length === 0) return undefined;
 
-	const confirmedDims = evaluatedDims.filter((d) => d.confirmed);
-	let composite = 0;
-	if (confirmedDims.length > 0) {
-		let activeWeight = 0;
-		let activeSum = 0;
-		for (const d of confirmedDims) {
-			activeWeight += d.confirmedWeight;
-			activeSum += d.confirmedWeightedSum;
-		}
-		composite = activeWeight > 0 ? activeSum / activeWeight : 0;
-	} else {
-		let totalWeight = 0;
-		let weightedSum = 0;
-		for (const d of evaluatedDims) {
-			totalWeight += d.weight;
-			weightedSum += d.weight * d.risk;
-		}
-		composite = totalWeight > 0 ? weightedSum / totalWeight : 0;
-	}
+	const composite = composeDimensions(evaluatedDims);
 
 	return {
 		probability: round4(clamp01(composite)),
@@ -492,8 +470,13 @@ export interface DeciderOutcome {
 	error?: string;
 }
 
-function formatPercent(p: number): string {
+export function formatPercent(p: number): string {
 	return `${Math.round(p * 100)}%`;
+}
+
+/** Dimensions at or above the 0.5 risk cutoff, highest risk first. */
+export function flaggedRisks(breakdown: readonly DeciderDimensionScore[] | undefined): DeciderDimensionScore[] {
+	return (breakdown ?? []).filter((b) => b.risk >= 0.5).sort((a, b) => b.risk - a.risk);
 }
 
 /** Evaluates the current turn with the classifier model. Never throws; failures yield `finding: undefined` and `error`. */
@@ -544,12 +527,10 @@ export async function evaluateWithDecider(
 		const threshold = opts.config.threshold;
 		const failed = probability >= threshold;
 		const label = `${opts.model.provider}/${opts.model.id}`;
-		const topRisks = breakdown
-			.filter((b) => b.risk >= 0.5)
-			.sort((a, b) => b.risk - a.risk)
-			.map((b) => `${b.id}=${formatPercent(b.risk)}`);
+		const topRisks = flaggedRisks(breakdown).map((b) => `${b.id}=${formatPercent(b.risk)}`);
 		const detailSuffix = topRisks.length > 0 ? ` [${topRisks.join(", ")}]` : "";
-		const reason = `decider (${label}): ${formatPercent(probability)} wrong (threshold ${formatPercent(threshold)})${detailSuffix}`;
+		const truncatedSuffix = turn.truncated ? " (input truncated)" : "";
+		const reason = `decider (${label}): ${formatPercent(probability)} wrong (threshold ${formatPercent(threshold)})${detailSuffix}${truncatedSuffix}`;
 
 		return {
 			finding: {

@@ -18,6 +18,18 @@ describe("isPrivateOrLocal", () => {
 		expect(isPrivateOrLocal("2606:4700::1111")).toBe(false);
 	});
 
+	it("detects reserved, multicast and embedded-IPv4 ranges", () => {
+		for (const h of ["224.0.0.1", "239.255.255.250", "255.255.255.255", "198.18.0.1", "198.19.255.1", "192.0.0.8", "192.0.2.1", "198.51.100.7", "203.0.113.9"]) {
+			expect(isPrivateOrLocal(h), h).toBe(true);
+		}
+		for (const h of ["ff02::1", "2001:db8::1", "64:ff9b::7f00:1", "64:ff9b::a00:1", "2002:7f00:1::1", "::127.0.0.1", "::ffff:10.0.0.1"]) {
+			expect(isPrivateOrLocal(h), h).toBe(true);
+		}
+		for (const h of ["198.20.0.1", "64:ff9b::808:808", "2002:808:808::1", "2606:4700::1111"]) {
+			expect(isPrivateOrLocal(h), h).toBe(false);
+		}
+	});
+
 	it("detects local names", () => {
 		for (const h of ["localhost", "LOCALHOST", "printer.local", "svc.internal", "git.corp", "nas.lan", "intranet", "jenkins"]) {
 			expect(isPrivateOrLocal(h), h).toBe(true);
