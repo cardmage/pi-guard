@@ -2,6 +2,8 @@
 
 > 이 레포의 코드는 AI로 생성했으며, 사람이 코드를 검토하지 않았습니다.
 
+![AI generated, not reviewed by a human](https://img.shields.io/badge/AI%20generated-not%20reviewed%20by%20a%20human-orange)
+
 [English](./README.md) | 한국어
 
 에이전트의 최종 답변에 포함된 모든 URL을 검증하여 환각(hallucinated) 출처 링크나 사실과 다르게 인용된 링크를 잡아내는 [Pi](https://pi.dev) 확장(extension)입니다.
